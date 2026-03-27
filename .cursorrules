@@ -1,0 +1,197 @@
+# ============================================================
+# FindBud App — AI 编程规范 (.cursorrules)
+# 适用范围：全项目（前端 React Native + 后端 FastAPI + 数据库 PostgreSQL）
+# ============================================================
+
+## 一、项目背景（AI 必读，写代码前必须理解）
+
+FindBud 是一款"找搭子/比赛组队"App。
+核心业务逻辑如下，任何涉及该流程的代码都必须严格遵守以下设计：
+
+1. **采集基础信息**：收集用户基本资料（姓名、年级、专业等）及目标比赛类型。
+2. **预设评判维度**：系统后台维护一组评判维度（如：技术能力、沟通风格、时间投入度、创新思维等），这些维度不暴露给用户，仅供 AI 参考生成问题。
+3. **AI 动态提问**（核心模块，重点理解）：
+   - 调用 AI API，将"比赛类型 + 预设维度"作为上下文传入。
+   - AI 必须针对每位用户生成**不同的、个性化的**问题序列，禁止为所有用户返回完全相同的问题。
+   - 提问轮次建议 3~5 轮，每轮 1 个问题，支持追问。
+   - 问题和回答均以结构化 JSON 格式存储，方便后续匹配算法读取。
+4. **匹配算法**：基于用户画像向量（由基础信息 + AI 问答结果构建）计算相似度或互补度，最终固定推荐 **3 个** 潜在队友，不多不少。
+5. **展示结果**：向用户展示 3 个推荐队友的简介、匹配维度说明及联系方式入口。
+
+> ⚠️ AI 助手规则：在生成任何与"提问流程"或"匹配推荐"相关的代码前，必须先在注释中简述你对该业务模块的理解，再开始编写代码。
+
+---
+
+## 二、命名规范
+
+### 2.1 Python 后端（FastAPI）
+
+| 类型 | 规范 | 示例 |
+|------|------|------|
+| 变量 / 参数 | `snake_case` | `user_id`, `competition_type` |
+| 函数 | `snake_case` 动词开头 | `get_user_profile()`, `generate_questions()` |
+| 类 | `PascalCase` | `UserProfile`, `MatchResult` |
+| 常量 | `UPPER_SNAKE_CASE` | `MAX_RECOMMEND_COUNT = 3` |
+| 数据库表名 | `snake_case` 复数 | `users`, `match_sessions`, `question_answers` |
+| Pydantic Schema | `PascalCase` + `Schema` 后缀 | `UserCreateSchema`, `MatchResultSchema` |
+| 路由文件 | `snake_case` | `match_router.py`, `ai_question_router.py` |
+
+### 2.2 React Native 前端
+
+| 类型 | 规范 | 示例 |
+|------|------|------|
+| 变量 / 函数 | `camelCase` | `userId`, `fetchRecommendations()` |
+| 组件 | `PascalCase` | `UserProfileCard`, `QuestionScreen` |
+| 常量 | `UPPER_SNAKE_CASE` | `MAX_BUDDIES = 3` |
+| 样式对象 key | `camelCase` | `containerStyle`, `titleText` |
+| 文件名（组件） | `PascalCase.tsx` | `MatchResultScreen.tsx` |
+| 文件名（工具/hooks）| `camelCase.ts` | `useMatchFlow.ts`, `apiClient.ts` |
+
+### 2.3 数据库字段
+
+- 统一使用 `snake_case`
+- 主键统一命名为 `id`（UUID 类型）
+- 时间字段统一命名为 `created_at` / `updated_at`
+
+---
+
+## 三、注释规范（强制执行）
+
+### 3.1 中文注释要求
+
+- **所有注释必须使用中文**，英文仅用于代码关键字本身。
+- 每个函数/方法必须有文档字符串（docstring / JSDoc），说明：功能、参数、返回值。
+- 复杂业务逻辑（特别是 AI 提问模块和匹配算法）必须逐步注释，不得写无注释的逻辑块。
+
+### 3.2 Python 注释示例模板
+
+```python
+def generate_ai_questions(user_id: str, competition_type: str, dimensions: list[str]) -> list[dict]:
+    """
+    调用 AI API，根据比赛类型和预设维度，为指定用户动态生成个性化问题。
+
+    参数:
+        user_id (str): 目标用户的唯一标识符
+        competition_type (str): 比赛类型，如 "数学建模"、"黑客马拉松" 等
+        dimensions (list[str]): 后台预设的评判维度列表
+
+    返回:
+        list[dict]: 问题列表，每项格式为 {"question_id": str, "question_text": str, "dimension": str}
+
+    注意:
+        - 每次调用应产生差异化问题，禁止硬编码固定问题列表
+        - AI API Key 必须从环境变量读取，禁止硬编码
+    """
+    # 从环境变量获取 AI API Key，绝对禁止硬编码
+    api_key = os.getenv("AI_API_KEY")
+    # 构建系统提示词，注入比赛类型和维度上下文
+    system_prompt = build_system_prompt(competition_type, dimensions)
+    # ... 后续实现
+```
+
+### 3.3 TypeScript/React Native 注释示例模板
+
+```typescript
+/**
+ * 匹配结果展示屏幕
+ * 展示系统为当前用户推荐的 3 个潜在队友，包含匹配维度说明
+ *
+ * @param route - React Navigation 路由参数，包含 matchSessionId
+ */
+const MatchResultScreen: React.FC<MatchResultScreenProps> = ({ route }) => {
+  // 固定推荐数量为 3，与后端 MAX_RECOMMEND_COUNT 保持一致
+  const MAX_BUDDIES = 3;
+  // ...
+};
+```
+
+---
+
+## 四、目录结构规范
+
+```
+FindBud_APP/
+├── frontend/                  # React Native 前端
+│   ├── src/
+│   │   ├── screens/           # 页面级组件（PascalCase.tsx）
+│   │   ├── components/        # 复用组件
+│   │   ├── hooks/             # 自定义 hooks（use 前缀）
+│   │   ├── services/          # API 请求封装
+│   │   ├── store/             # 状态管理（如 Zustand）
+│   │   └── constants/         # 全局常量
+│   └── ...
+├── backend/                   # FastAPI 后端
+│   ├── app/
+│   │   ├── routers/           # 路由模块
+│   │   ├── models/            # 数据库 ORM 模型
+│   │   ├── schemas/           # Pydantic 请求/响应 Schema
+│   │   ├── services/          # 业务逻辑层
+│   │   │   ├── ai_service.py      # AI 动态提问核心服务
+│   │   │   └── match_service.py   # 匹配算法核心服务
+│   │   ├── core/              # 配置、依赖注入、安全
+│   │   └── main.py
+│   ├── tests/
+│   ├── .env.example           # 环境变量模板（不含真实 Key）
+│   └── requirements.txt
+└── README.md
+```
+
+---
+
+## 五、安全规范（强制执行）
+
+1. **AI API Key 保护**：
+   - 所有 API Key（AI_API_KEY、DATABASE_URL 等）必须通过 `.env` 文件注入，使用 `python-dotenv` 加载。
+   - `.env` 文件必须在 `.gitignore` 中，禁止提交到 Git。
+   - 仓库只保留 `.env.example`，其中 Key 值留空或填写占位符。
+   - AI 助手生成代码时，发现有硬编码 Key 必须立即指出并拒绝。
+
+2. **数据库**：
+   - ORM 一律使用参数化查询，禁止拼接 SQL 字符串。
+   - 数据库密码同上，通过环境变量管理。
+
+3. **用户数据**：
+   - 用户 ID 使用 UUID，禁止使用自增整数作为对外暴露的标识符。
+
+---
+
+## 六、API 接口规范
+
+- 遵循 RESTful 设计，URL 使用 `kebab-case`（如 `/api/v1/match-sessions`）。
+- 所有接口返回统一的 JSON 结构：
+  ```json
+  {
+    "code": 200,
+    "message": "success",
+    "data": {}
+  }
+  ```
+- 错误响应包含 `code`（业务错误码）和 `message`（中文描述）。
+- 版本号统一放在 URL 路径：`/api/v1/`。
+
+---
+
+## 七、Git 提交规范
+
+提交信息格式：`<type>(<scope>): <中文描述>`
+
+| type | 说明 |
+|------|------|
+| `feat` | 新功能 |
+| `fix` | Bug 修复 |
+| `refactor` | 重构 |
+| `docs` | 文档更新 |
+| `test` | 测试相关 |
+| `chore` | 构建/工具配置 |
+
+示例：`feat(ai-service): 实现基于比赛类型的动态问题生成接口`
+
+---
+
+## 八、AI 助手行为约束
+
+1. 在生成核心业务代码前，必须先用注释声明对该模块业务逻辑的理解。
+2. 禁止生成任何包含硬编码 API Key 或密码的代码。
+3. 禁止为"动态提问"模块生成硬编码的固定问题列表，必须体现 AI 动态生成的设计。
+4. 推荐结果数量必须遵守常量 `MAX_RECOMMEND_COUNT = 3`，禁止在业务逻辑中写魔法数字 `3`。
+5. 每次修改匹配算法或 AI 提问逻辑，必须同步更新对应的中文注释和文档字符串。

@@ -1,0 +1,63 @@
+# ==============================
+# FindBud App — .gitignore
+# ==============================
+
+# ---- 环境变量（绝对不能提交！）----
+.env
+.env.local
+.env.*.local
+
+# ---- Python 后端 ----
+__pycache__/
+*.py[cod]
+*.pyo
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# ---- React Native 前端 ----
+node_modules/
+.expo/
+*.orig.*
+web-build/
+android/
+ios/
+*.keystore
+*.jks
+
+# ---- 数据库 ----
+*.sqlite3
+*.db
+
+# ---- IDE / 系统 ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ---- 日志 ----
+*.log
+logs/
+
+# ---- 数据库迁移（Alembic 生成文件保留，但运行时缓存不提交）----
+alembic/versions/__pycache__/
+
+# ---- 测试覆盖率报告 ----
+.coverage
+htmlcov/
+coverage.xml
+
+# ---- AI API 响应缓存（本地调试时可能生成）----
+.ai_cache/
+*.ai_response.json
+
+# ---- React Native 构建产物 ----
+.metro-health-check*
+.bundle/
+
+# ---- 上传的临时文件 ----
+uploads/
+tmp/
