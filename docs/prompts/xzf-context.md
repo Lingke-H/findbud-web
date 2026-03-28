@@ -8,18 +8,25 @@
 
 ## 项目背景（网页版）
 
-我在开发一款叫 **FindBud（找搭子）** 的网页应用，帮助大学生找比赛队友。前端用 **React + Vite**，在浏览器里运行，不需要手机。
+我在开发一款叫 **FindBud（找搭子）** 的网页应用，面向**宁波诺丁汉大学**学生，当前 MVP 聚焦**数学建模比赛搭子**。前端用 **React + Vite**，在浏览器里运行，不需要手机。
 
-**完整业务流程：**
-1. 用户填写基础信息 + 选择目标比赛类型（带标签）
-2. 完成 1-2 个人工设计的固定问题
-3. 系统 AI 根据比赛类型再动态提问 3~5 个个性化问题
-4. 后端运行匹配算法，固定推荐 **3 位** 最合适的队友并展示
+**完整业务流程（三个 Phase）：**
+
+**Phase I：用户信息采集**
+1. 收集 6 项基础信息：姓名、性别、年级、专业、组队目标、是否长期组队
+2. 机动前置问题（1-2 题选择题）：根据组队目标分流，例如"你倾向在数学建模团队担任什么角色？A.建模手 B.论文手 C.编程手 D.无倾向"
+3. AI 生成选择题，量化三大维度向量（技能向量、性格动能因子、绝对实力）
+
+**Phase II：匹配算法**
+4. 后端通过"平行与正交的效用函数"在 Mock 数据库中找出最优 3 位候选人
+
+**Phase III：展示结果**
+5. 固定推荐 **3 位** 最合适的队友并展示
 
 **我负责的部分：前端页面开发（React + Vite 网页版）**
-- 用户信息收集页面
-- 目标比赛类型的标签选择模块
-- 人工设计的固定问题页面（1-2题）
+- 基础信息收集页面（6 项）
+- 机动前置问题页面（选择题，根据组队目标显示）
+- AI 选择题页面（向量量化阶段）
 - 匹配结果展示页面（调用后端匹配接口）
 
 ---
@@ -28,10 +35,10 @@
 
 | 页面 | 文件名 | 功能 |
 |------|--------|------|
-| 基础信息填写页 | `OnboardingPage.tsx` | 收集昵称、学校、专业、年级 |
-| 比赛类型选择页 | `CompetitionSelectPage.tsx` | 带标签的比赛类型多选，如"数学建模""黑客马拉松" |
-| 固定问题页 | `FixedQuestionPage.tsx` | 展示人工预设的 1-2 个固定问题，用户输入回答 |
-| 匹配结果页 | `MatchResultPage.tsx` | 展示 3 位推荐队友的卡片，含匹配度和联系方式 |
+| 基础信息填写页 | `OnboardingPage.tsx` | 收集 6 项基础信息：姓名、性别、年级、专业、组队目标、是否长期组队 |
+| 机动前置问题页 | `PreQuestionPage.tsx` | 根据组队目标展示 1-2 道选择题（主观因素收集） |
+| AI 向量收集页 | `AIQuestionPage.tsx` | 展示 AI 生成的选择题，用户逐题作答，量化三大维度 |
+| 匹配结果页 | `MatchResultPage.tsx` | 展示 3 位推荐队友的卡片，含匹配维度说明和联系方式 |
 
 ---
 
@@ -39,34 +46,51 @@
 
 > **说明**：下面是目前参考的字段定义。**如果你这边的页面需要额外的字段，直接告诉 xyh，由 xyh 加到数据库里**。不要自己再 `frontend/` 以外的地方添加字段。
 
-### 用户基础信息
+### 用户基础信息（6 项）
 ```typescript
 interface User {
-  id: string;           // UUID
-  nickname: string;     // 昵称
-  school: string;       // 学校
-  major: string;        // 专业
-  grade: string;        // 年级，如 "大二"
-  avatarUrl?: string;
-  bio?: string;
+  id: string;              // UUID
+  name: string;            // 姓名
+  gender: string;          // 性别
+  grade: string;           // 年级，如 "大二"
+  major: string;           // 专业
+  teamGoal: string;        // 组队目标，如 "数学建模比赛"
+  wantLongTerm: boolean;   // 是否想要长期组队
 }
 ```
 
-### 比赛类型（带标签）
+### 选择题（机动前置 + AI 向量收集）
 ```typescript
-interface CompetitionType {
-  id: string;
-  name: string;         // 如 "数学建模"
-  category: string;     // 大类标签，如 "技术类"、"学科类"
-}
-```
-
-### 固定问题
-```typescript
-interface FixedQuestion {
+interface ChoiceQuestion {
   questionId: string;
-  questionText: string;   // 问题正文
-  orderIndex: number;     // 展示顺序（1 或 2）
+  questionText: string;    // 问题正文
+  options: Array<{
+    label: string;         // 选项标签，如 "A"
+    text: string;          // 选项文字，如 "建模手"
+  }>;
+  phase: 'pre' | 'ai';    // pre=机动前置问题，ai=AI向量收集
+  dimension?: string;      // 对应的向量维度（AI 阶段）
+}
+```
+
+### 用户向量（AI 阶段量化结果）
+```typescript
+interface UserVector {
+  skillVector: {           // 技能向量（相对实力）
+    modeling: number;      // 数学建模实力
+    coding: number;        // 编程实现
+    writing: number;       // 论文排版
+  };
+  personalityFactor: {     // 性格动能因子
+    leader: number;        // 领导者
+    supporter: number;     // 支持者
+    executor: number;      // 执行者
+  };
+  absoluteStrength: {      // 绝对实力
+    experience: number;    // 比赛经验
+    hasAward: boolean;     // 是否获奖
+    ambition: number;      // 夺冠欲望
+  };
 }
 ```
 
@@ -166,6 +190,13 @@ UI 风格：[简洁/卡片/列表等，可不填]
 使用常量 MAX_BUDDIES = 3 控制渲染数量，不要硬编码 3。
 后端地址从 import.meta.env.VITE_API_BASE_URL 读取，所有注释用中文。
 ```
+
+---
+
+## 前置软件安装（仅首次，装过跳过）
+
+需要安装 **Node.js**：https://nodejs.org → 选 LTS 版本，一路下一步。
+安装完**关闭并重新打开 PowerShell** 后，运行 `node --version` 验证是否成功。
 
 ---
 
