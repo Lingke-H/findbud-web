@@ -1,347 +1,433 @@
 """
-匹配算法服务模块
+匹配算法服务模块（数学建模大赛版）
 
 业务理解（编码前必读）：
-    本模块是 FindBud App 的第二个核心亮点。
-    在用户完成 AI 动态提问后，系统已为该用户构建出一个多维度画像向量
-    （存储在 match_sessions.user_vector 和 user_profiles 表中）。
-    本模块负责将该向量与数据库中其他候选用户的向量进行相似度/互补度计算，
-    最终严格返回 Top 3 的潜在队友推荐列表，不多不少。
-    推荐数量由常量 MAX_RECOMMEND_COUNT = 3 控制，禁止在业务逻辑中硬编码数字 3。
+    本模块是 FindBud App 的核心匹配引擎（Phase II）。
+    用户完成 AI 动态提问后，系统已为该用户构建出分类标签画像（UserProfile）。
+    本模块接收用户 A 的画像及已通过固定标签筛选的候选用户集合，
+    通过效用函数最大化，严格返回 Top 3 推荐列表，不多不少。
+
+    算法流程（对应 matching_module_prompt.md 的步骤编号）：
+        步骤3   ─ 互补指数计算（互斥标签组 → 余弦正交性）
+        步骤4   ─ 独立标签预处理与相似度计算（差异越小越好）
+        步骤5   ─ 按列 Min-Max 归一化
+        步骤6   ─ 权重计算（熵权法客观权重 × α + 主观权重 × (1-α)，α=0.5）
+        步骤7   ─ 效用函数（加权和）
+        步骤8~9 ─ 初步配对（按效用值排序取 Top MAX_RECOMMEND_COUNT）
+        步骤10  ─ 特长多样性检查 + 候选池耗尽容错机制
+
+    推荐数量由 MAX_RECOMMEND_COUNT 控制，禁止在业务逻辑中硬编码数字 3。
+    主客观权重融合比例由 OBJECTIVE_WEIGHT_RATIO 控制，主观权重由 SUBJECTIVE_WEIGHTS 指定。
 """
 
 import math
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
 # ========== 常量 ==========
 
 # 固定推荐队友数量，全项目统一以此常量为准
 MAX_RECOMMEND_COUNT: int = 3
 
-# 各评判维度在匹配算法中的默认权重（与 evaluation_dimensions 表的 weight 字段对应）
-# 实际运行时应从数据库动态读取，此处为回退默认值
-DEFAULT_DIMENSION_WEIGHTS: dict[str, float] = {
-    "技术能力":   1.50,
-    "沟通协作":   1.20,
-    "时间投入度": 1.30,
-    "创新思维":   1.20,
-    "抗压能力":   1.00,
-    "领导力":     0.80,
+# 主客观权重融合系数（0.0 = 纯主观，1.0 = 纯客观，默认 1:1）
+# ⚙️ 开发者：如需调整主客观比例，只需修改此常量，无需改动计算逻辑
+OBJECTIVE_WEIGHT_RATIO: float = 0.5
+
+# 主观权重字典（键名须与指标名完全一致，值无需归一化，程序会自动处理）
+# ⚙️ 开发者：如需调整各维度主观权重，只需修改此字典，无需改动计算逻辑
+SUBJECTIVE_WEIGHTS: dict[str, float] = {
+    "技能互补指数":       0.45,
+    "性格互补指数":       0.15,
+    "参与比赛场次相似度": 0.10,
+    "是否获奖相似度":     0.15,
+    "获奖欲望相似度":     0.15,
 }
 
 
 # ========== 数据结构定义 ==========
 
 @dataclass
-class UserVector:
+class UserProfile:
     """
-    用户画像向量，由基础信息 + AI 问答评分结果构建。
-    对应数据库中 user_profiles 表的一行 + match_sessions.user_vector 字段。
+    用户分类标签画像（匹配模块的核心输入单元）。
+    包含两组互斥标签（技能向量、性格动能因子）和一组独立标签（绝对实力）。
+    所有字段均由 AI 动态提问阶段评分后写入，对应 user_profiles 表。
     """
-    # 用户唯一标识
+    # 用户唯一标识（对应数据库 UUID）
     user_id: str
-    # 各评判维度得分，键为维度名称，值为 0.0~10.0 的归一化评分
-    dimension_scores: dict[str, float]
-    # 用户偏好的比赛类型列表（来自 user_competition_preferences 表）
-    preferred_competition_types: list[str] = field(default_factory=list)
-    # 用户倾向角色，如 "技术开发"、"项目管理"、"设计"
-    preferred_role: str = ""
+
+    # ── 互斥标签组1：技能向量（得分范围 0~100，组内各项此消彼长）──
+    skill_modeling: float    # 建模手
+    skill_coding: float      # 编程手
+    skill_writing: float     # 论文手
+
+    # ── 互斥标签组2：性格动能因子（得分范围 0~100，组内各项此消彼长）──
+    personality_leader: float    # 军官（领导者）
+    personality_executor: float  # 勇士（执行者）
+    personality_supporter: float # 军师（支持者）
+
+    # ── 独立标签：绝对实力（与其他标签无此消彼长关系）──
+    experience_count: int   # 参与过的比赛场次（非负整数）
+    has_award: bool         # 是否获过奖
+    ambition: float         # 获奖欲望（0~10）
 
 
 @dataclass
-class MatchCandidate:
+class DimensionScore:
+    """单个指标的得分明细，用于前端展示匹配原因。"""
+    dimension: str    # 指标名称（如"技能互补指数"）
+    raw_score: float  # 归一化后的指标得分（0~1）
+    weight: float     # 该指标的最终融合权重（0~1）
+
+
+@dataclass
+class MatchResult:
     """
-    单个候选队友的匹配结果，对应数据库 match_results 表的一行。
+    单个候选用户的匹配结果，对应数据库 match_results 表的一行。
     """
-    # 候选队友的用户 ID
-    candidate_user_id: str
-    # 综合匹配度得分（0.0~1.0，越高越匹配）
-    match_score: float
-    # 各维度的匹配分析明细，最终存入 match_results.match_reasons（JSONB）
-    dimension_breakdown: list[dict[str, Any]]
-    # 推荐摘要文字，由算法基于维度分析生成
-    summary: str
+    candidate_user_id: str                     # 候选用户 UUID
+    rank: int                                  # 推荐排名（1~MAX_RECOMMEND_COUNT）
+    match_score: float                         # 综合效用函数值（0~1，越高越匹配）
+    dimension_breakdown: list[DimensionScore]  # 各指标得分明细
 
 
-# ========== 向量计算工具函数 ==========
-
-def normalize_scores(dimension_scores: dict[str, float]) -> dict[str, float]:
+@dataclass
+class MatchOutput:
     """
-    将各维度原始得分（0~10）归一化到 0~1 区间。
-
-    参数:
-        dimension_scores (dict[str, float]): 原始维度得分字典
-
-    返回:
-        dict[str, float]: 归一化后的得分字典
+    find_top_matches 的最终返回值，包含推荐列表及多样性保证标记。
     """
-    return {dim: score / 10.0 for dim, score in dimension_scores.items()}
+    results: list[MatchResult]
+    # 是否保证了特长标签多样性；候选池不足时为 False，供上层调用者感知
+    diversity_guaranteed: bool = True
 
 
-def compute_weighted_cosine_similarity(
-    vec_a: dict[str, float],
-    vec_b: dict[str, float],
-    weights: dict[str, float],
-) -> float:
+# ========== 子模块2：互补指数计算（步骤3） ==========
+
+def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
     """
-    计算两个用户维度向量之间的加权余弦相似度。
-
-    适用场景：寻找"相似"队友（如技术风格一致的搭档）。
-
-    参数:
-        vec_a (dict[str, float]): 用户 A 的归一化维度得分
-        vec_b (dict[str, float]): 用户 B 的归一化维度得分
-        weights (dict[str, float]): 各维度权重
-
-    返回:
-        float: 加权余弦相似度（0.0~1.0）
+    计算两个向量的标准余弦相似度。
+    若任一向量为零向量，返回 0.0（无法比较，视为不相似）。
     """
-    # 取两个向量共同拥有的维度
-    common_dims = set(vec_a.keys()) & set(vec_b.keys())
-    if not common_dims:
-        return 0.0
-
-    dot_product: float = 0.0
-    norm_a: float = 0.0
-    norm_b: float = 0.0
-
-    for dim in common_dims:
-        w = weights.get(dim, 1.0)
-        a = vec_a[dim] * w
-        b = vec_b[dim] * w
-        dot_product += a * b
-        norm_a += a ** 2
-        norm_b += b ** 2
-
+    dot = sum(a * b for a, b in zip(vec_a, vec_b))
+    norm_a = math.sqrt(sum(a ** 2 for a in vec_a))
+    norm_b = math.sqrt(sum(b ** 2 for b in vec_b))
     if norm_a == 0.0 or norm_b == 0.0:
         return 0.0
+    return dot / (norm_a * norm_b)
 
-    return dot_product / (math.sqrt(norm_a) * math.sqrt(norm_b))
 
-
-def compute_complementarity_score(
-    vec_a: dict[str, float],
-    vec_b: dict[str, float],
-    weights: dict[str, float],
+def _compute_complementarity_index(
+    vec_a: list[float],
+    vec_b: list[float],
 ) -> float:
     """
-    计算两个用户之间的加权互补度得分。
+    计算一组互斥标签的互补指数：互补指数 = 1 - cosine_similarity(A, B)。
+    两向量越正交（余弦相似度越低），互补性越强，互补指数越高（趋近 1）。
+    """
+    return 1.0 - _cosine_similarity(vec_a, vec_b)
 
-    适用场景：寻找"互补"队友（如一人技术强、另一人管理强）。
-    互补度定义：某维度上两人得分差距越大，该维度互补性越高。
+
+# ========== 子模块3：独立标签预处理与相似度计算（步骤4） ==========
+
+def _logistic_map(x: float, k: float = 0.3, x0: float = 5.0) -> float:
+    """
+    Logistic 函数，将比赛场次（非负整数）非线性压缩到 (0, 1) 区间。
+    k 控制曲线增长速度，x0 控制中点位置（场次=x0 时映射值为 0.5）。
+    开发者可根据实际数据分布调整 k 和 x0。
+    """
+    return 1.0 / (1.0 + math.exp(-k * (x - x0)))
+
+
+def _compute_independent_similarities(
+    user_a: UserProfile,
+    user_b: UserProfile,
+) -> dict[str, float]:
+    """
+    计算所有独立标签在用户 A 与用户 B 之间的相似度（差异越小，得分越高）。
+
+    各标签计算规则：
+        参与比赛场次 ─ logistic 映射后取 1 - |A_mapped - B_mapped|
+        是否获奖     ─ 布尔值转 0/1，取 1 - |A - B|
+        获奖欲望     ─ 0~10 分值，取 1 - |A - B| / 10
+
+    未指明特殊映射的独立标签默认使用恒等映射 y = x。
+    """
+    # 参与比赛场次：先 logistic 映射，再计算相似度
+    mapped_a = _logistic_map(float(user_a.experience_count))
+    mapped_b = _logistic_map(float(user_b.experience_count))
+    experience_sim = 1.0 - abs(mapped_a - mapped_b)
+
+    # 是否获奖：布尔型转为 0/1 后计算差异
+    award_a = 1.0 if user_a.has_award else 0.0
+    award_b = 1.0 if user_b.has_award else 0.0
+    award_sim = 1.0 - abs(award_a - award_b)
+
+    # 获奖欲望：0~10 范围，除以 10 归一化分母
+    ambition_sim = 1.0 - abs(user_a.ambition - user_b.ambition) / 10.0
+
+    return {
+        "参与比赛场次相似度": experience_sim,
+        "是否获奖相似度":     award_sim,
+        "获奖欲望相似度":     ambition_sim,
+    }
+
+
+# ========== 子模块4：归一化（步骤5） ==========
+
+def _normalize_column(values: list[float]) -> list[float]:
+    """
+    对一列指标值进行 Min-Max 归一化，映射到 [0, 1]。
+    若所有值相等（max == min），视为无差异，全部返回 1.0。
+    """
+    min_v = min(values)
+    max_v = max(values)
+    if max_v == min_v:
+        return [1.0] * len(values)
+    return [(v - min_v) / (max_v - min_v) for v in values]
+
+
+# ========== 子模块5：权重计算（步骤6） ==========
+
+def _compute_entropy_weights(matrix: list[list[float]]) -> list[float]:
+    """
+    熵权法计算各指标的客观权重。
+
+    原理：某指标在各候选用户间差异越大（信息熵越低），
+    对区分候选人的贡献越大，赋予越高客观权重。
 
     参数:
-        vec_a (dict[str, float]): 用户 A 的归一化维度得分
-        vec_b (dict[str, float]): 用户 B 的归一化维度得分
-        weights (dict[str, float]): 各维度权重
+        matrix ─ 归一化后的指标矩阵，行=候选用户，列=指标
 
     返回:
-        float: 加权互补度得分（0.0~1.0）
+        各指标客观权重列表，总和为 1.0
     """
-    common_dims = set(vec_a.keys()) & set(vec_b.keys())
-    if not common_dims:
-        return 0.0
+    n_samples = len(matrix)
+    n_indicators = len(matrix[0]) if matrix else 0
 
-    total_weight: float = sum(weights.get(dim, 1.0) for dim in common_dims)
-    if total_weight == 0.0:
-        return 0.0
+    # 样本数不足时退化为均等权重（无法计算有效信息熵）
+    if n_samples <= 1 or n_indicators == 0:
+        count = n_indicators if n_indicators > 0 else 1
+        return [1.0 / count] * count
 
-    # 加权差值绝对值之和，差距越大说明互补性越强
-    weighted_diff_sum: float = sum(
-        weights.get(dim, 1.0) * abs(vec_a[dim] - vec_b[dim])
-        for dim in common_dims
-    )
+    utility_values: list[float] = []
+    for col_idx in range(n_indicators):
+        col = [matrix[row][col_idx] for row in range(n_samples)]
+        col_sum = sum(col)
 
-    return weighted_diff_sum / total_weight
-
-
-def compute_combined_match_score(
-    vec_a: dict[str, float],
-    vec_b: dict[str, float],
-    weights: dict[str, float],
-    similarity_weight: float = 0.5,
-    complementarity_weight: float = 0.5,
-) -> float:
-    """
-    综合相似度和互补度，计算最终匹配得分。
-
-    参数:
-        vec_a (dict[str, float]): 用户 A 的归一化维度得分
-        vec_b (dict[str, float]): 用户 B 的归一化维度得分
-        weights (dict[str, float]): 各维度权重
-        similarity_weight (float): 相似度在最终得分中的占比（默认 0.5）
-        complementarity_weight (float): 互补度在最终得分中的占比（默认 0.5）
-
-    返回:
-        float: 综合匹配得分（0.0~1.0）
-    """
-    similarity = compute_weighted_cosine_similarity(vec_a, vec_b, weights)
-    complementarity = compute_complementarity_score(vec_a, vec_b, weights)
-
-    return similarity * similarity_weight + complementarity * complementarity_weight
-
-
-# ========== 维度分析工具函数 ==========
-
-def build_dimension_breakdown(
-    vec_a: dict[str, float],
-    vec_b: dict[str, float],
-    weights: dict[str, float],
-) -> list[dict[str, Any]]:
-    """
-    生成两个用户各维度的匹配分析明细，用于填充 match_results.match_reasons 字段。
-
-    参数:
-        vec_a (dict[str, float]): 当前用户的归一化维度得分
-        vec_b (dict[str, float]): 候选队友的归一化维度得分
-        weights (dict[str, float]): 各维度权重
-
-    返回:
-        list[dict]: 各维度分析列表，每项含 dimension、score、comment
-    """
-    breakdown = []
-    common_dims = set(vec_a.keys()) & set(vec_b.keys())
-
-    for dim in sorted(common_dims, key=lambda d: weights.get(d, 1.0), reverse=True):
-        score_a = vec_a[dim]
-        score_b = vec_b[dim]
-        diff = abs(score_a - score_b)
-
-        # 相似度分量（差距越小，相似度越高）
-        similarity_component = 1.0 - diff
-
-        # 根据差距生成文字描述
-        if diff < 0.15:
-            comment = f"{dim}高度一致"
-        elif diff < 0.35:
-            comment = f"{dim}较为接近，有共同语言"
-        else:
-            comment = f"{dim}形成互补，优势互补效果佳"
-
-        breakdown.append({
-            "dimension": dim,
-            "score": round(similarity_component, 4),
-            "comment": comment,
-        })
-
-    return breakdown
-
-
-def generate_match_summary(breakdown: list[dict[str, Any]]) -> str:
-    """
-    根据维度分析明细，生成简短的推荐摘要文字。
-
-    参数:
-        breakdown (list[dict]): build_dimension_breakdown 的返回结果
-
-    返回:
-        str: 推荐摘要字符串
-    """
-    # 取得分最高的前 3 个维度作为摘要亮点
-    top_dims = sorted(breakdown, key=lambda x: x["score"], reverse=True)[:3]
-    highlights = "、".join([item["comment"] for item in top_dims])
-    return highlights if highlights else "综合匹配度较高"
-
-
-# ========== 核心匹配接口 ==========
-
-def find_top_matches(
-    current_user: UserVector,
-    all_candidates: list[UserVector],
-    dimension_weights: dict[str, float] | None = None,
-) -> list[MatchCandidate]:
-    """
-    核心匹配函数：计算当前用户与所有候选人的匹配度，严格返回 Top 3 推荐列表。
-
-    业务逻辑：
-        1. 剔除当前用户自身
-        2. 对每位候选人：归一化向量 → 计算综合匹配得分 → 生成维度分析
-        3. 按匹配得分降序排列，取前 MAX_RECOMMEND_COUNT（= 3）名
-        4. 返回包含匹配得分和分析明细的 MatchCandidate 列表
-
-    参数:
-        current_user (UserVector): 发起匹配的当前用户画像向量
-        all_candidates (list[UserVector]): 数据库中所有候选用户的画像向量列表
-            （应预先按比赛类型筛选，只传入参加同一比赛的候选人）
-        dimension_weights (dict[str, float] | None): 各维度权重，
-            None 时使用 DEFAULT_DIMENSION_WEIGHTS
-
-    返回:
-        list[MatchCandidate]: 严格长度为 MAX_RECOMMEND_COUNT（3）的推荐列表，
-            按 match_score 降序排列。若候选人不足 3 人，返回所有候选人。
-    """
-    # 使用传入的权重，或回退到默认权重
-    weights = dimension_weights if dimension_weights is not None else DEFAULT_DIMENSION_WEIGHTS
-
-    # 归一化当前用户的维度得分
-    normalized_current = normalize_scores(current_user.dimension_scores)
-
-    scored_candidates: list[MatchCandidate] = []
-
-    for candidate in all_candidates:
-        # 排除当前用户自身（不能把自己推荐给自己）
-        if candidate.user_id == current_user.user_id:
+        # 该列全为 0 时无信息量，信息效用为 0
+        if col_sum == 0.0:
+            utility_values.append(0.0)
             continue
 
-        # 归一化候选人的维度得分
-        normalized_candidate = normalize_scores(candidate.dimension_scores)
+        # 计算各样本在该指标上的比例 p_ij（加小量防止 log(0)）
+        p_list = [(v + 1e-9) / (col_sum + 1e-9 * n_samples) for v in col]
 
-        # 计算综合匹配得分（相似度 + 互补度加权融合）
-        match_score: float = compute_combined_match_score(
-            vec_a=normalized_current,
-            vec_b=normalized_candidate,
-            weights=weights,
-            similarity_weight=0.5,
-            complementarity_weight=0.5,
-        )
+        # 信息熵 e_j = -1/ln(n) × Σ(p_ij × ln(p_ij))
+        entropy = -sum(p * math.log(p) for p in p_list) / math.log(n_samples)
 
-        # 生成各维度分析明细，用于前端展示匹配原因
-        dimension_breakdown = build_dimension_breakdown(
-            normalized_current,
-            normalized_candidate,
-            weights,
-        )
+        # 信息效用值 d_j = 1 - e_j（差异越大，效用越高）
+        utility_values.append(max(0.0, 1.0 - entropy))
 
-        # 生成推荐摘要文字
-        summary: str = generate_match_summary(dimension_breakdown)
+    total_utility = sum(utility_values)
+    if total_utility == 0.0:
+        # 所有指标信息效用均为 0，退化为均等权重
+        return [1.0 / n_indicators] * n_indicators
 
-        scored_candidates.append(MatchCandidate(
-            candidate_user_id=candidate.user_id,
-            match_score=round(match_score, 4),
-            dimension_breakdown=dimension_breakdown,
-            summary=summary,
-        ))
-
-    # 按综合匹配得分降序排列
-    scored_candidates.sort(key=lambda c: c.match_score, reverse=True)
-
-    # 严格截取 Top MAX_RECOMMEND_COUNT 名，固定返回 3 个推荐结果
-    return scored_candidates[:MAX_RECOMMEND_COUNT]
+    return [u / total_utility for u in utility_values]
 
 
-def build_user_vector_from_profile(
-    user_id: str,
-    profile_scores: dict[str, float],
-    preferred_competition_types: list[str],
-    preferred_role: str,
-) -> UserVector:
+def _blend_weights(
+    objective_weights: list[float],
+    subjective_weights: list[float],
+    alpha: float,
+) -> list[float]:
     """
-    从数据库 user_profiles 表的查询结果构建 UserVector 对象。
+    融合客观权重与主观权重：final = alpha × objective + (1 - alpha) × subjective。
+    融合后再次归一化，确保总和严格为 1.0。
+    """
+    blended = [
+        alpha * obj + (1.0 - alpha) * subj
+        for obj, subj in zip(objective_weights, subjective_weights)
+    ]
+    total = sum(blended)
+    if total == 0.0:
+        n = len(blended)
+        return [1.0 / n] * n
+    return [w / total for w in blended]
+
+
+# ========== 特长标签收集（步骤8 辅助函数） ==========
+
+def _get_special_tags(profile: UserProfile) -> dict[str, str]:
+    """
+    获取用户每一组互斥标签中的「特长标签」（该组内得分最高的子标签名）。
+
+    返回: {互斥标签组名: 特长子标签名}
+    例：{"技能向量": "建模手", "性格动能因子": "军师"}
+    """
+    skill_scores: dict[str, float] = {
+        "建模手": profile.skill_modeling,
+        "编程手": profile.skill_coding,
+        "论文手": profile.skill_writing,
+    }
+    personality_scores: dict[str, float] = {
+        "军官": profile.personality_leader,
+        "勇士": profile.personality_executor,
+        "军师": profile.personality_supporter,
+    }
+    return {
+        "技能向量":     max(skill_scores,       key=lambda k: skill_scores[k]),
+        "性格动能因子": max(personality_scores,  key=lambda k: personality_scores[k]),
+    }
+
+
+# ========== 子模块6：初步配对 + 子模块7：最终确定 ==========
+
+def find_top_matches(
+    user_a: UserProfile,
+    candidates: list[UserProfile],
+) -> MatchOutput:
+    """
+    核心匹配函数：输入用户 A 及已通过固定标签筛选的候选集，返回最优 Top 3 推荐。
+
+    完整执行步骤3~10，包括：
+        - 互补指数计算（余弦正交性）
+        - 独立标签相似度计算（差异越小越好）
+        - 按列归一化
+        - 熵权法 + 主观权重 1:1 融合
+        - 效用函数加权和
+        - 特长标签多样性检查（步骤10）
+        - 候选池耗尽容错机制
 
     参数:
-        user_id (str): 用户 UUID
-        profile_scores (dict[str, float]): 各维度得分，键为维度名称
-            例：{"技术能力": 8.5, "沟通协作": 7.0, ...}
-        preferred_competition_types (list[str]): 偏好比赛类型名称列表
-        preferred_role (str): 倾向角色
+        user_a     ─ 发起匹配的用户画像（已完成 AI 动态提问）
+        candidates ─ 已通过固定标签筛选的候选用户列表（不应包含 user_a 自身）
 
     返回:
-        UserVector: 可直接传入 find_top_matches 的用户画像向量对象
+        MatchOutput：含 Top-MAX_RECOMMEND_COUNT 推荐结果及 diversity_guaranteed 标记
     """
-    return UserVector(
-        user_id=user_id,
-        dimension_scores=profile_scores,
-        preferred_competition_types=preferred_competition_types,
-        preferred_role=preferred_role,
+    # 候选池为空时直接返回空结果
+    if not candidates:
+        return MatchOutput(results=[], diversity_guaranteed=True)
+
+    # 有效指标名列表（顺序与 SUBJECTIVE_WEIGHTS 键顺序一致，后续矩阵列对应此顺序）
+    indicator_names: list[str] = list(SUBJECTIVE_WEIGHTS.keys())
+    n_indicators: int = len(indicator_names)
+    n_candidates: int = len(candidates)
+
+    # ── 步骤3~4：计算每对 (A, B) 的原始指标值 ──
+    raw_matrix: list[list[float]] = []
+    for b in candidates:
+        # 互斥标签组1：技能向量的余弦正交性（互补指数）
+        skill_a = [user_a.skill_modeling, user_a.skill_coding, user_a.skill_writing]
+        skill_b = [b.skill_modeling,      b.skill_coding,      b.skill_writing]
+        comp_skill = _compute_complementarity_index(skill_a, skill_b)
+
+        # 互斥标签组2：性格动能因子的余弦正交性（互补指数）
+        pers_a = [user_a.personality_leader, user_a.personality_executor, user_a.personality_supporter]
+        pers_b = [b.personality_leader,      b.personality_executor,      b.personality_supporter]
+        comp_personality = _compute_complementarity_index(pers_a, pers_b)
+
+        # 独立标签：差异越小越好
+        indep = _compute_independent_similarities(user_a, b)
+
+        raw_matrix.append([
+            comp_skill,
+            comp_personality,
+            indep["参与比赛场次相似度"],
+            indep["是否获奖相似度"],
+            indep["获奖欲望相似度"],
+        ])
+
+    # ── 步骤5：按列（每个指标跨所有候选用户）进行 Min-Max 归一化 ──
+    normalized_matrix: list[list[float]] = [
+        [0.0] * n_indicators for _ in range(n_candidates)
+    ]
+    for col in range(n_indicators):
+        col_values = [raw_matrix[row][col] for row in range(n_candidates)]
+        normalized_col = _normalize_column(col_values)
+        for row in range(n_candidates):
+            normalized_matrix[row][col] = normalized_col[row]
+
+    # ── 步骤6：计算融合权重 ──
+    # 客观权重：熵权法
+    objective_weights: list[float] = _compute_entropy_weights(normalized_matrix)
+
+    # 主观权重：从 SUBJECTIVE_WEIGHTS 按指标顺序提取并归一化
+    raw_subj = [SUBJECTIVE_WEIGHTS.get(name, 0.0) for name in indicator_names]
+    total_subj = sum(raw_subj)
+    subjective_weights: list[float] = (
+        [w / total_subj for w in raw_subj]
+        if total_subj > 0.0
+        else [1.0 / n_indicators] * n_indicators
     )
+
+    # 融合权重（OBJECTIVE_WEIGHT_RATIO 控制主客观比例）
+    final_weights: list[float] = _blend_weights(
+        objective_weights, subjective_weights, OBJECTIVE_WEIGHT_RATIO
+    )
+
+    # ── 步骤7：计算效用函数值（加权和）──
+    utility_scores: list[float] = [
+        sum(final_weights[col] * normalized_matrix[row][col] for col in range(n_indicators))
+        for row in range(n_candidates)
+    ]
+
+    # 同步收集每位候选用户的特长标签（供步骤10使用）
+    special_tags: list[dict[str, str]] = [_get_special_tags(b) for b in candidates]
+
+    # ── 步骤8~9：初步配对，按效用值降序排列，取 Top MAX_RECOMMEND_COUNT ──
+    sorted_indices: list[int] = sorted(
+        range(n_candidates), key=lambda i: utility_scores[i], reverse=True
+    )
+    top_indices: list[int] = list(sorted_indices[:MAX_RECOMMEND_COUNT])
+    next_ptr: int = MAX_RECOMMEND_COUNT  # 指向排名下一位的游标
+
+    # ── 步骤10：特长标签多样性检查 ──
+    # 每个互斥标签组内，若初步配对的三人特长标签全部相同，则触发替换
+    diversity_guaranteed: bool = True
+    group_names: list[str] = ["技能向量", "性格动能因子"]
+
+    need_recheck: bool = len(top_indices) >= MAX_RECOMMEND_COUNT
+    while need_recheck:
+        need_recheck = False
+        for group in group_names:
+            tags = [special_tags[i][group] for i in top_indices]
+            # 三人该组特长全部相同，触发替换
+            if len(set(tags)) == 1:
+                if next_ptr >= n_candidates:
+                    # 候选池已耗尽，启动容错机制，不再强制替换
+                    diversity_guaranteed = False
+                    need_recheck = False
+                    break
+                # 剔除当前 top 中效用值最低的成员
+                worst_idx = min(top_indices, key=lambda i: utility_scores[i])
+                top_indices.remove(worst_idx)
+                top_indices.append(sorted_indices[next_ptr])
+                next_ptr += 1
+                need_recheck = True  # 替换后重新检查所有组
+                break
+
+    # ── 构建最终返回结果 ──
+    results: list[MatchResult] = []
+    for idx in top_indices:
+        breakdown: list[DimensionScore] = [
+            DimensionScore(
+                dimension=indicator_names[col],
+                raw_score=round(normalized_matrix[idx][col], 4),
+                weight=round(final_weights[col], 4),
+            )
+            for col in range(n_indicators)
+        ]
+        results.append(MatchResult(
+            candidate_user_id=candidates[idx].user_id,
+            rank=0,  # 暂时填 0，排序后赋正式排名
+            match_score=round(utility_scores[idx], 4),
+            dimension_breakdown=breakdown,
+        ))
+
+    # 按效用得分降序排列，赋予最终排名（1 = 最佳）
+    results.sort(key=lambda r: r.match_score, reverse=True)
+    for rank_num, result in enumerate(results, start=1):
+        result.rank = rank_num
+
+    return MatchOutput(results=results, diversity_guaranteed=diversity_guaranteed)
