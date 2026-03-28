@@ -10,8 +10,7 @@
 
 | 分支名 | 用途 | 保护规则 |
 |--------|------|---------|
-| `main` | 生产就绪代码，随时可运行 | 禁止直接 push，只接受 PR 合并 |
-| `dev` | 日常集成分支，各功能分支合并到此处 | 禁止直接 push，只接受 PR 合并 |
+| `main` | 唯一稳定分支，始终保持可运行状态 | 禁止直接 push，只接受 PR 合并 |
 
 ### 功能分支命名规则
 
@@ -25,42 +24,45 @@
 | `docs` | 文档更新 | `docs/update-schema` |
 | `test` | 测试相关 | `test/ai-service-unit` |
 
-### 三条核心功能分支
+### 个人开发分支
+
+每人建立并维护自己的开发分支，完成后直接向 `main` 提 PR：
 
 ```
-dev
- ├── feat/frontend-screens         # 前端页面与交互
- ├── feat/ai-question-service      # AI 动态提问接口
- └── feat/match-algorithm          # 匹配算法逻辑
+main
+ ├── <你的分支名>     # 个人开发分支，自行命名
+ ├── <队友A的分支名>
+ └── <队友B的分支名>
 ```
 
-> 每人在自己负责的分支上开发，完成后向 `dev` 提 PR，不允许直接操作他人分支。
+> 只在自己的分支上开发，不操作他人分支。合并前完成下方 PR 自我检查清单。
 
 ---
 
 ## 二、日常开发流程
 
 ```
-1. 从 dev 拉取最新代码
-   git checkout dev && git pull origin dev
+1. 从 main 拉取最新代码（保持分支与主线同步）
+   git checkout main && git pull origin main
 
-2. 创建自己的功能分支
-   git checkout -b feat/your-feature-name
+2. 切换到自己的个人分支（首次使用 -b 创建）
+   git checkout -b your-branch-name
 
 3. 开发 → 提交（遵循 Commit 规范）
    git add .
    git commit -m "feat(ai-service): 实现动态问题生成接口"
 
 4. 推送到远端
-   git push origin feat/your-feature-name
+   git push origin your-branch-name
 
-5. 在 GitHub 上向 dev 发起 Pull Request
+5. 在 GitHub 上向 main 发起 Pull Request
    → 填写 PR 描述（参考下方模板）
    → 完成自我检查清单后，请另一人 Review
 
-6. Review 通过 → Squash and Merge 到 dev
+6. Review 通过 → Squash and Merge 到 main
 
-7. 阶段性里程碑完成后，由负责人将 dev 合并到 main
+7. 合并完成后，本地同步 main 最新代码，再继续下一个功能开发
+   git checkout main && git pull origin main
 ```
 
 ---
@@ -129,18 +131,17 @@ test(ai-service): 添加 generate_next_question 的单元测试
 
 1. **`docs/schema.md` 发生冲突**：三人同步对齐后，由最后修改方手动合并，确保字段定义一致。
 2. **`backend/app/services/` 发生冲突**：`ai_service.py` 和 `match_service.py` 分属不同负责人，正常情况不应产生冲突；若有，以最新业务讨论结果为准。
-3. **禁止用 `--force push` 覆盖 `dev` 或 `main` 分支**。
+3. **禁止用 `--force push` 覆盖 `main` 分支**。
+4. **合并前先同步**：提 PR 前先将 `main` 的最新提交 merge 或 rebase 到自己分支，减少冲突概率。
 
 ---
 
 ## 六、紧急修复流程
 
-若 `dev` 或 `main` 出现严重 Bug 需紧急修复：
+若 `main` 出现严重 Bug 需紧急修复：
 
 ```
-git checkout main
+git checkout main && git pull origin main
 git checkout -b fix/critical-issue-name
 # 修复 → 完成 PR 自我检查清单 → 直接向 main 提 PR
-# 修复合并后，立即将 main 反向合并回 dev
-git checkout dev && git merge main
 ```

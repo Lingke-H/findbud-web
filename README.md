@@ -145,22 +145,28 @@ cd FindBud_APP
 
 ### 2. 后端环境配置
 
-```bash
-cd backend
-
+**Windows（PowerShell）：**
+```powershell
 # 创建并激活虚拟环境
-python -m venv venv
-# Windows
-venv\Scripts\activate
-# macOS / Linux
-source venv/bin/activate
+python -m venv backend\venv
+backend\venv\Scripts\activate
 
 # 安装依赖
-pip install -r requirements.txt
+pip install -r backend\requirements.txt
 
 # 配置环境变量（重要！）
-cp .env.example .env
+Copy-Item backend\.env.example backend\.env
 ```
+
+**macOS / Linux：**
+```bash
+python -m venv backend/venv
+source backend/venv/bin/activate
+pip install -r backend/requirements.txt
+cp backend/.env.example backend/.env
+```
+
+> ⚠️ **注意**：所有命令均在项目根目录 `FindBud_APP/` 下执行，不需要先 `cd backend`。
 
 打开 `backend/.env`，填入你的真实配置：
 

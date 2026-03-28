@@ -195,3 +195,31 @@ FindBud_APP/
 3. 禁止为"动态提问"模块生成硬编码的固定问题列表，必须体现 AI 动态生成的设计。
 4. 推荐结果数量必须遵守常量 `MAX_RECOMMEND_COUNT = 3`，禁止在业务逻辑中写魔法数字 `3`。
 5. 每次修改匹配算法或 AI 提问逻辑，必须同步更新对应的中文注释和文档字符串。
+
+---
+
+## 九、模块边界保护规则
+
+本项目分为三个独立模块，每个模块有明确的文件归属。**AI 助手在生成代码时，必须严格限制在当前模块的文件范围内，禁止越界修改其他模块的文件。**
+
+### 模块边界定义
+
+| 模块 | 归属文件 | 禁止修改的文件 |
+|------|---------|--------------|
+| 前端界面 | `frontend/src/` 下所有文件 | `backend/` 下任何文件 |
+| AI 提问接口 | `backend/app/services/ai_service.py`、`backend/app/routers/ai_question_router.py` | `match_service.py`、`frontend/` |
+| 匹配算法 | `backend/app/services/match_service.py`、`backend/app/routers/match_router.py` | `ai_service.py`、`frontend/` |
+
+### 共享文件修改规则
+
+以下文件属于全局共享，**修改前必须通知所有人**，不得单方面改动：
+
+- `docs/schema.md` — 数据库表结构定义
+- `backend/app/models/` — ORM 数据库模型
+- `backend/app/schemas/` — Pydantic 公共 Schema
+- `.cursorrules` — 编码规范
+
+### AI 助手执行规则
+
+- 如果用户描述的需求涉及修改**不属于当前模块**的文件，AI 必须先提示："此修改涉及其他模块的文件（xxx），请确认是否有权限修改，建议与对应负责人确认后再操作。"
+- 不得在未经说明的情况下，在其他模块文件中新增函数、修改字段名或删除逻辑。

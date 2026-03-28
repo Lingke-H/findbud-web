@@ -1,0 +1,20 @@
+# Web 框架
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+
+# 数据库
+sqlalchemy>=2.0.30
+alembic>=1.13.0
+psycopg2-binary
+
+# 环境变量
+python-dotenv>=1.0.0
+
+# 数据校验（pydantic v2，需要 2.9+ 以支持 Python 3.13）
+pydantic>=2.9.0
+pydantic-settings>=2.4.0
+
+# HTTP 客户端（调用 AI API）
+httpx>=0.27.0
+openai>=1.30.0
+
