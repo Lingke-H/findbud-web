@@ -6,9 +6,9 @@
 
 ===复制开始===
 
-## 项目背景
+## 项目背景（网页版）
 
-我在开发一款叫 **FindBud（找搭子）** 的手机 App，帮助大学生找比赛队友。用 React Native 开发，跨平台（iOS + Android）。
+我在开发一款叫 **FindBud（找搭子）** 的网页应用，帮助大学生找比赛队友。前端用 **React + Vite**，在浏览器里运行，不需要手机。
 
 **完整业务流程：**
 1. 用户填写基础信息 + 选择目标比赛类型（带标签）
@@ -16,7 +16,7 @@
 3. 系统 AI 根据比赛类型再动态提问 3~5 个个性化问题
 4. 后端运行匹配算法，固定推荐 **3 位** 最合适的队友并展示
 
-**我负责的部分：前端页面开发（React Native）**
+**我负责的部分：前端页面开发（React + Vite 网页版）**
 - 用户信息收集页面
 - 目标比赛类型的标签选择模块
 - 人工设计的固定问题页面（1-2题）
@@ -28,10 +28,10 @@
 
 | 页面 | 文件名 | 功能 |
 |------|--------|------|
-| 基础信息填写页 | `OnboardingScreen.tsx` | 收集昵称、学校、专业、年级 |
-| 比赛类型选择页 | `CompetitionSelectScreen.tsx` | 带标签的比赛类型多选，如"数学建模""黑客马拉松" |
-| 固定问题页 | `FixedQuestionScreen.tsx` | 展示人工预设的 1-2 个固定问题，用户输入回答 |
-| 匹配结果页 | `MatchResultScreen.tsx` | 展示 3 位推荐队友的卡片，含匹配度和联系方式 |
+| 基础信息填写页 | `OnboardingPage.tsx` | 收集昵称、学校、专业、年级 |
+| 比赛类型选择页 | `CompetitionSelectPage.tsx` | 带标签的比赛类型多选，如"数学建模""黑客马拉松" |
+| 固定问题页 | `FixedQuestionPage.tsx` | 展示人工预设的 1-2 个固定问题，用户输入回答 |
+| 匹配结果页 | `MatchResultPage.tsx` | 展示 3 位推荐队友的卡片，含匹配度和联系方式 |
 
 ---
 
@@ -112,11 +112,12 @@ interface MatchCandidate {
 
 ## 编码规范（必须遵守）
 
-- **组件**：`PascalCase`，文件名 `PascalCase.tsx`
+- **组件/页面**：`PascalCase`，文件名 `PascalCase.tsx`，放在 `frontend/src/pages/`
 - **变量/函数**：`camelCase`，如 `fetchMatchResults()`
 - **常量**：`UPPER_SNAKE_CASE`，如 `MAX_BUDDIES = 3`
 - **注释**：全部写中文
 - **推荐数量**：一律用常量 `MAX_BUDDIES = 3`，不要直接写数字 `3`
+- **后端 API 地址**：从环境变量 `import.meta.env.VITE_API_BASE_URL` 读取，不要硬编码 `http://localhost:8000`
 - **不要修改** `backend/` 目录下的任何文件
 
 ---
@@ -140,27 +141,45 @@ UI 风格：[简洁/卡片/列表等，可不填]
 
 **示例 1：比赛类型标签选择页**
 ```
-请帮我实现 CompetitionSelectScreen.tsx。
-进入页面时调用 GET /api/v1/competition-types 获取列表，按 category 分组展示带标签的比赛类型（如"技术类"下面有"黑客马拉松""ACM"等）。
+请帮我实现 frontend/src/pages/CompetitionSelectPage.tsx。
+这是一个 React 网页组件，用 fetch 调用 GET /api/v1/competition-types 获取列表。
+按 category 字段分组展示带标签的比赛类型（如"技术类"下面有"黑客马拉松""ACM"等）。
 用户可以多选，选中的条目高亮显示。
 点击"下一步"按钮后，把选中的 competitionTypeId 列表传给下一个页面。
-使用 React Native，样式简洁，所有注释用中文。
+后端地址从 import.meta.env.VITE_API_BASE_URL 读取。样式简洁，所有注释用中文。
 ```
 
 **示例 2：固定问题页**
 ```
-请帮我实现 FixedQuestionScreen.tsx。
-进入页面时调用 GET /api/v1/fixed-questions 获取 1-2 个固定问题，按 orderIndex 顺序展示。
+请帮我实现 frontend/src/pages/FixedQuestionPage.tsx。
+这是一个 React 网页组件，进入页面时调用 GET /api/v1/fixed-questions 获取 1-2 个固定问题，按 orderIndex 顺序展示。
 每题展示问题文字和一个文本输入框，用户填写回答。
 全部填完点击"提交"，依次调用 POST /api/v1/match-sessions/{sessionId}/answer 提交每题答案，成功后跳转到 AI 提问等待页。
-所有注释用中文。
+后端地址从 import.meta.env.VITE_API_BASE_URL 读取，所有注释用中文。
 ```
 
 **示例 3：匹配结果展示页**
 ```
-请帮我实现 MatchResultScreen.tsx。
-进入页面时调用 GET /api/v1/match-sessions/{sessionId}/results 获取推荐结果。
+请帮我实现 frontend/src/pages/MatchResultPage.tsx。
+这是一个 React 网页组件，进入页面时调用 GET /api/v1/match-sessions/{sessionId}/results 获取推荐结果。
 用卡片形式展示 3 位队友，每张卡片显示：头像、昵称、学校专业、matchScore（转为百分比）、summary 文字、联系方式按钮。
 使用常量 MAX_BUDDIES = 3 控制渲染数量，不要硬编码 3。
-所有注释用中文。
+后端地址从 import.meta.env.VITE_API_BASE_URL 读取，所有注释用中文。
 ```
+
+---
+
+## 本地环境启动（Windows PowerShell，只需做一次的步骤标注了"仅首次"）
+
+```powershell
+# 【仅首次】安装前端依赖（在项目根目录执行）
+npm install --prefix frontend
+
+# 【仅首次】复制环境变量文件
+Copy-Item frontend\.env.example frontend\.env
+
+# 每次开始写代码前启动前端开发服务器
+npm run dev --prefix frontend
+```
+
+> 启动成功后访问 http://localhost:5173 就能看到页面，保存代码后浏览器自动刷新。

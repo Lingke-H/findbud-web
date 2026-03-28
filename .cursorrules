@@ -1,6 +1,6 @@
 # ============================================================
 # FindBud App — AI 编程规范 (.cursorrules)
-# 适用范围：全项目（前端 React Native + 后端 FastAPI + 数据库 PostgreSQL）
+# 适用范围：全项目（前端 React + Vite 网页版 + 后端 FastAPI + 数据库 PostgreSQL）
 # ============================================================
 
 ## 一、项目背景（AI 必读，写代码前必须理解）
@@ -36,15 +36,15 @@ FindBud 是一款"找搭子/比赛组队"App。
 | Pydantic Schema | `PascalCase` + `Schema` 后缀 | `UserCreateSchema`, `MatchResultSchema` |
 | 路由文件 | `snake_case` | `match_router.py`, `ai_question_router.py` |
 
-### 2.2 React Native 前端
+### 2.2 React 前端（网页版 React + Vite）
 
 | 类型 | 规范 | 示例 |
 |------|------|------|
 | 变量 / 函数 | `camelCase` | `userId`, `fetchRecommendations()` |
-| 组件 | `PascalCase` | `UserProfileCard`, `QuestionScreen` |
+| 组件 | `PascalCase` | `UserProfileCard`, `QuestionPage` |
 | 常量 | `UPPER_SNAKE_CASE` | `MAX_BUDDIES = 3` |
-| 样式对象 key | `camelCase` | `containerStyle`, `titleText` |
-| 文件名（组件） | `PascalCase.tsx` | `MatchResultScreen.tsx` |
+| CSS 模块类名 | `camelCase` | `styles.container`, `styles.titleText` |
+| 文件名（页面组件） | `PascalCase.tsx` | `MatchResultPage.tsx`, `QuestionPage.tsx` |
 | 文件名（工具/hooks）| `camelCase.ts` | `useMatchFlow.ts`, `apiClient.ts` |
 
 ### 2.3 数据库字段
@@ -207,6 +207,7 @@ FindBud_APP/
 | 模块 | 归属文件 | 禁止修改的文件 |
 |------|---------|--------------|
 | 前端界面 | `frontend/src/` 下所有文件 | `backend/` 下任何文件 |
+| 前端概述 | React + Vite 网页，运行在浏览器，无需手机环境 | — |
 | AI 提问接口 | `backend/app/services/ai_service.py`、`backend/app/routers/ai_question_router.py` | `match_service.py`、`frontend/` |
 | 匹配算法 | `backend/app/services/match_service.py`、`backend/app/routers/match_router.py` | `ai_service.py`、`frontend/` |
 

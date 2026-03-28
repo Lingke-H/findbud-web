@@ -20,7 +20,7 @@
 
 | 层级 | 技术选型 |
 |------|---------|
-| 前端 | React Native（跨平台移动端） |
+| 前端 | React + Vite（网页版） |
 | 后端 | Python + FastAPI |
 | 数据库 | PostgreSQL |
 | AI 接口 | AI API（通过环境变量配置，支持 OpenAI / DeepSeek 等） |
@@ -216,29 +216,31 @@ uvicorn app.main:app --reload --port 8000
 
 ### 5. 前端环境配置
 
-```bash
-cd frontend
-npm install
+**Windows（PowerShell）：**
+```powershell
+npm install --prefix frontend
+Copy-Item frontend\.env.example frontend\.env
+```
 
-# 配置前端环境变量（API 地址）
-cp .env.example .env
+**macOS / Linux：**
+```bash
+npm install --prefix frontend
+cp frontend/.env.example frontend/.env
 ```
 
 `.env` 内容示例：
 
 ```dotenv
-API_BASE_URL=http://localhost:8000/api/v1
+VITE_API_BASE_URL=http://localhost:8000/api/v1
 ```
 
 ### 6. 启动前端
 
-```bash
-# iOS
-npm run ios
-
-# Android
-npm run android
+```powershell
+npm run dev --prefix frontend
 ```
+
+访问 [http://localhost:5173](http://localhost:5173) 查看页面。
 
 ---
 
