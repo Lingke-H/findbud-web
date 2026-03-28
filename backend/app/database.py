@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from dotenv import load_dotenv
 
 # 加载 .env 文件中的环境变量
-load_dotenv()
+load_dotenv(encoding="utf-8")
 
 # 从环境变量读取数据库连接字符串
 DATABASE_URL = os.getenv("DATABASE_URL")

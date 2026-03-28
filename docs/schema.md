@@ -3,6 +3,7 @@
 > **用途**：将此文件直接喂给 AI（Cursor/Copilot），确保前后端三人操作同一数据模型。
 > **数据库**：PostgreSQL 15+
 > **字段类型约定**：`UUID` 主键、`TIMESTAMPTZ` 时间戳、`JSONB` 存储结构化动态数据。
+> **MVP 场景**：数学建模比赛搭子（宁波诺丁汉大学）
 
 ---
 
@@ -11,17 +12,13 @@
 ```
 users
   │
-  ├──< user_competition_preferences >── competition_types
-  │
   ├──< match_sessions
   │         │
-  │         ├──< question_answers
+  │         ├──< question_answers   (前置选择题 + AI 向量收集题)
   │         │
-  │         └──< match_results >── users (被推荐的队友)
+  │         └──< match_results >── users (被推荐的候选人)
   │
-  └──── user_profiles (1:1)
-
-evaluation_dimensions (系统后台维护，独立表)
+  └──── user_profiles (1:1，存储三大向量维度)
 ```
 
 ---
@@ -32,198 +29,105 @@ evaluation_dimensions (系统后台维护，独立表)
 
 ### 1. `users` — 用户基础信息表
 
-> 存储用户注册后的基础资料，是所有关联数据的根节点。
+> 存储用户填写的 6 项基础信息，是所有关联数据的根节点。
 
 | 字段名 | 类型 | 约束 | 说明 |
 |--------|------|------|------|
-| `id` | `UUID` | PK, DEFAULT gen_random_uuid() | 用户唯一标识，对外暴露 |
-| `nickname` | `VARCHAR(50)` | NOT NULL | 用户昵称，App 内展示名称 |
-| `real_name` | `VARCHAR(50)` | NULL | 真实姓名，仅队友匹配后可见 |
-| `school` | `VARCHAR(100)` | NOT NULL | 所在学校 |
-| `major` | `VARCHAR(100)` | NOT NULL | 所学专业 |
+| `id` | `UUID` | PK, DEFAULT gen_random_uuid() | 用户唯一标识 |
+| `name` | `VARCHAR(50)` | NOT NULL | 姓名 |
+| `gender` | `VARCHAR(10)` | NOT NULL | 性别，如 "男" / "女" / "其他" |
 | `grade` | `VARCHAR(20)` | NOT NULL | 年级，如 "大二"、"研一" |
+| `major` | `VARCHAR(100)` | NOT NULL | 专业 |
+| `team_goal` | `VARCHAR(100)` | NOT NULL | 组队目标，如 "数学建模比赛" |
+| `want_long_term` | `BOOLEAN` | NOT NULL | 是否想要长期组队（固定标签） |
+| `gender_preference` | `VARCHAR(10)` | NULL | **固定标签**：对搭子的性别要求，如 "男"/"女"/"任意" |
+| `grade_preference` | `VARCHAR(20)` | NULL | **固定标签**：对搭子的年级要求，如 "大二"/"任意" |
 | `contact_info` | `VARCHAR(100)` | NULL | 联系方式（微信/QQ），匹配后展示 |
-| `avatar_url` | `TEXT` | NULL | 头像图片 URL |
-| `bio` | `TEXT` | NULL | 个人简介，100 字以内 |
-| `is_active` | `BOOLEAN` | NOT NULL, DEFAULT TRUE | 账号是否处于激活状态 |
+| `is_active` | `BOOLEAN` | NOT NULL, DEFAULT TRUE | 账号是否激活 |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT now() | 注册时间 |
-| `updated_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT now() | 最后更新时间 |
+
+> **固定标签说明**：`gender_preference` / `grade_preference` / `want_long_term` 用于条件筛选（排除不符合要求的候选人），不参与效用函数计算。
 
 ```sql
 CREATE TABLE users (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    nickname        VARCHAR(50)  NOT NULL,
-    real_name       VARCHAR(50),
-    school          VARCHAR(100) NOT NULL,
-    major           VARCHAR(100) NOT NULL,
-    grade           VARCHAR(20)  NOT NULL,
-    contact_info    VARCHAR(100),
-    avatar_url      TEXT,
-    bio             TEXT,
-    is_active       BOOLEAN      NOT NULL DEFAULT TRUE,
-    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
+    id                 UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    name               VARCHAR(50)  NOT NULL,
+    gender             VARCHAR(10)  NOT NULL,
+    grade              VARCHAR(20)  NOT NULL,
+    major              VARCHAR(100) NOT NULL,
+    team_goal          VARCHAR(100) NOT NULL,
+    want_long_term     BOOLEAN      NOT NULL,
+    gender_preference  VARCHAR(10),
+    grade_preference   VARCHAR(20),
+    contact_info       VARCHAR(100),
+    is_active          BOOLEAN      NOT NULL DEFAULT TRUE,
+    created_at         TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 ```
 
 ---
 
-### 2. `competition_types` — 比赛类型字典表
+### 2. `match_sessions` — 匹配会话表
 
-> 系统预设的比赛类型，由管理员维护。用户选择目标比赛类型时从此表取值。
-
-| 字段名 | 类型 | 约束 | 说明 |
-|--------|------|------|------|
-| `id` | `UUID` | PK | 比赛类型唯一标识 |
-| `name` | `VARCHAR(100)` | NOT NULL, UNIQUE | 比赛名称，如 "数学建模"、"黑客马拉松" |
-| `category` | `VARCHAR(50)` | NOT NULL | 大类，如 "技术类"、"创新创业类"、"学科类" |
-| `description` | `TEXT` | NULL | 比赛简介 |
-| `typical_team_size` | `SMALLINT` | NOT NULL, DEFAULT 3 | 该比赛典型队伍人数 |
-| `created_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT now() | 创建时间 |
-
-```sql
-CREATE TABLE competition_types (
-    id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    name                VARCHAR(100) NOT NULL UNIQUE,
-    category            VARCHAR(50)  NOT NULL,
-    description         TEXT,
-    typical_team_size   SMALLINT     NOT NULL DEFAULT 3,
-    created_at          TIMESTAMPTZ  NOT NULL DEFAULT now()
-);
-
--- 预置数据示例
-INSERT INTO competition_types (name, category, typical_team_size) VALUES
-('数学建模', '学科类', 3),
-('黑客马拉松', '技术类', 3),
-('大学生创新创业大赛', '创新创业类', 5),
-('ACM程序设计', '技术类', 3),
-('互联网+', '创新创业类', 5);
-```
-
----
-
-### 3. `user_competition_preferences` — 用户偏好比赛类型（多对多）
-
-> 一个用户可以偏好多种比赛类型，此为关联表。
-
-| 字段名 | 类型 | 约束 | 说明 |
-|--------|------|------|------|
-| `user_id` | `UUID` | FK → users.id | 用户 ID |
-| `competition_type_id` | `UUID` | FK → competition_types.id | 比赛类型 ID |
-| `created_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT now() | 添加时间 |
-
-```sql
-CREATE TABLE user_competition_preferences (
-    user_id              UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    competition_type_id  UUID        NOT NULL REFERENCES competition_types(id) ON DELETE CASCADE,
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (user_id, competition_type_id)
-);
-```
-
----
-
-### 4. `evaluation_dimensions` — 评判维度字典表（系统后台，用户不可见）
-
-> 系统预设的多个评判维度，AI 提问时以此为上下文。用户无法直接查看此表。
-
-| 字段名 | 类型 | 约束 | 说明 |
-|--------|------|------|------|
-| `id` | `UUID` | PK | 维度唯一标识 |
-| `name` | `VARCHAR(100)` | NOT NULL, UNIQUE | 维度名称，如 "技术能力" |
-| `description` | `TEXT` | NOT NULL | 维度描述，用于构建 AI 提示词 |
-| `applicable_categories` | `TEXT[]` | NULL | 适用的比赛大类，NULL 表示通用 |
-| `weight` | `NUMERIC(3,2)` | NOT NULL, DEFAULT 1.00 | 在匹配算法中的权重（0.00~2.00） |
-| `is_active` | `BOOLEAN` | NOT NULL, DEFAULT TRUE | 是否启用 |
-| `created_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT now() | 创建时间 |
-
-```sql
-CREATE TABLE evaluation_dimensions (
-    id                      UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
-    name                    VARCHAR(100)  NOT NULL UNIQUE,
-    description             TEXT          NOT NULL,
-    applicable_categories   TEXT[],
-    weight                  NUMERIC(3,2)  NOT NULL DEFAULT 1.00,
-    is_active               BOOLEAN       NOT NULL DEFAULT TRUE,
-    created_at              TIMESTAMPTZ   NOT NULL DEFAULT now()
-);
-
--- 预置数据示例
-INSERT INTO evaluation_dimensions (name, description, weight) VALUES
-('技术能力', '用户的编程、算法等硬技术水平', 1.50),
-('沟通协作', '团队合作中的沟通风格与协调能力', 1.20),
-('时间投入度', '愿意为比赛投入的时间和精力', 1.30),
-('创新思维', '提出新颖想法和解决问题的创造力', 1.20),
-('抗压能力', '面对截止日期和压力时的表现', 1.00),
-('领导力', '在团队中承担组织和推动角色的意愿', 0.80);
-```
-
----
-
-### 5. `match_sessions` — 匹配会话表
-
-> 用户每次发起一次匹配流程就创建一条记录，贯穿 AI 提问到推荐结果的完整生命周期。
+> 用户每次发起匹配流程就创建一条记录，贯穿选择题填写到推荐结果的完整生命周期。
 
 | 字段名 | 类型 | 约束 | 说明 |
 |--------|------|------|------|
 | `id` | `UUID` | PK | 会话唯一标识 |
 | `user_id` | `UUID` | FK → users.id, NOT NULL | 发起匹配的用户 |
-| `competition_type_id` | `UUID` | FK → competition_types.id, NOT NULL | 本次匹配的目标比赛 |
-| `status` | `VARCHAR(20)` | NOT NULL, DEFAULT 'questioning' | 状态：`questioning`（AI提问中）/ `matching`（算法运行中）/ `completed`（已完成）/ `expired`（已过期） |
-| `question_count` | `SMALLINT` | NOT NULL, DEFAULT 0 | 已完成的提问轮数 |
-| `user_vector` | `JSONB` | NULL | 最终构建的用户画像向量，由基础信息+问答结果生成，供匹配算法使用 |
+| `status` | `VARCHAR(20)` | NOT NULL, DEFAULT 'questioning' | 状态：`questioning`（选择题填写中）/ `matching`（算法运行中）/ `completed`（已完成） |
+| `question_count` | `SMALLINT` | NOT NULL, DEFAULT 0 | 已完成的题目数 |
+| `user_vector` | `JSONB` | NULL | 最终三大向量（AI题完成后写入，供匹配算法使用） |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT now() | 会话创建时间 |
 | `completed_at` | `TIMESTAMPTZ` | NULL | 匹配完成时间 |
 
 ```sql
 CREATE TABLE match_sessions (
-    id                   UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id              UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    competition_type_id  UUID        NOT NULL REFERENCES competition_types(id),
-    status               VARCHAR(20) NOT NULL DEFAULT 'questioning'
-                            CHECK (status IN ('questioning', 'matching', 'completed', 'expired')),
-    question_count       SMALLINT    NOT NULL DEFAULT 0,
-    user_vector          JSONB,
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    completed_at         TIMESTAMPTZ
+    id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id        UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    status         VARCHAR(20) NOT NULL DEFAULT 'questioning'
+                       CHECK (status IN ('questioning', 'matching', 'completed')),
+    question_count SMALLINT    NOT NULL DEFAULT 0,
+    user_vector    JSONB,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at   TIMESTAMPTZ
 );
 
--- 加速按用户查询历史会话
 CREATE INDEX idx_match_sessions_user_id ON match_sessions(user_id);
 ```
 
 ---
 
-### 6. `question_answers` — AI 问答记录表
+### 3. `question_answers` — 选择题记录表
 
-> 存储每次会话中 AI 动态生成的问题及用户的回答，是构建用户画像的原始数据。
+> 存储每次会话中的所有选择题（前置问题 + AI 向量收集题）及用户的选择。
 
 | 字段名 | 类型 | 约束 | 说明 |
 |--------|------|------|------|
 | `id` | `UUID` | PK | 记录唯一标识 |
 | `session_id` | `UUID` | FK → match_sessions.id, NOT NULL | 所属匹配会话 |
-| `dimension_id` | `UUID` | FK → evaluation_dimensions.id, NULL | 该问题对应的评判维度 |
-| `round_number` | `SMALLINT` | NOT NULL | 提问轮次（从 1 开始） |
-| `question_text` | `TEXT` | NOT NULL | AI 生成的问题原文 |
-| `answer_text` | `TEXT` | NULL | 用户的回答原文（未回答时为 NULL） |
-| `ai_score` | `NUMERIC(4,2)` | NULL | AI 对该回答在对应维度上的评分（0~10） |
-| `ai_score_reasoning` | `TEXT` | NULL | AI 给出评分的理由（供调试和透明度使用） |
-| `created_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT now() | 问题生成时间 |
-| `answered_at` | `TIMESTAMPTZ` | NULL | 用户回答时间 |
+| `phase` | `VARCHAR(10)` | NOT NULL | 阶段：`pre`（机动前置问题）/ `ai`（AI向量收集题） |
+| `round_number` | `SMALLINT` | NOT NULL | 题目序号（从 1 开始） |
+| `question_text` | `TEXT` | NOT NULL | 题目正文 |
+| `options` | `JSONB` | NOT NULL | 选项列表，如 `[{"label":"A","text":"建模手"},...]` |
+| `selected_option` | `VARCHAR(5)` | NULL | 用户选择的选项标签，如 `"A"` |
+| `dimension` | `VARCHAR(50)` | NULL | AI阶段对应的向量维度，如 `"skill_modeling"` |
+| `created_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT now() | 题目生成时间 |
+| `answered_at` | `TIMESTAMPTZ` | NULL | 用户作答时间 |
 
 ```sql
 CREATE TABLE question_answers (
-    id                   UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
-    session_id           UUID          NOT NULL REFERENCES match_sessions(id) ON DELETE CASCADE,
-    dimension_id         UUID          REFERENCES evaluation_dimensions(id),
-    round_number         SMALLINT      NOT NULL,
-    question_text        TEXT          NOT NULL,
-    answer_text          TEXT,
-    ai_score             NUMERIC(4,2)  CHECK (ai_score >= 0 AND ai_score <= 10),
-    ai_score_reasoning   TEXT,
-    created_at           TIMESTAMPTZ   NOT NULL DEFAULT now(),
-    answered_at          TIMESTAMPTZ,
-    UNIQUE (session_id, round_number)
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id      UUID        NOT NULL REFERENCES match_sessions(id) ON DELETE CASCADE,
+    phase           VARCHAR(10) NOT NULL CHECK (phase IN ('pre', 'ai')),
+    round_number    SMALLINT    NOT NULL,
+    question_text   TEXT        NOT NULL,
+    options         JSONB       NOT NULL,
+    selected_option VARCHAR(5),
+    dimension       VARCHAR(50),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    answered_at     TIMESTAMPTZ,
+    UNIQUE (session_id, phase, round_number)
 );
 
 CREATE INDEX idx_question_answers_session_id ON question_answers(session_id);
@@ -231,69 +135,73 @@ CREATE INDEX idx_question_answers_session_id ON question_answers(session_id);
 
 ---
 
-### 7. `user_profiles` — 用户能力画像表（1:1 与 users）
+### 4. `user_profiles` — 用户三大向量画像表（1:1 与 users）
 
-> 汇总用户在各评判维度上的最终得分，由匹配算法直接读取。每次新的匹配会话完成后更新。
+> 存储 AI 选择题量化后的三大向量维度，由匹配算法直接读取。AI 题全部完成后写入。
 
 | 字段名 | 类型 | 约束 | 说明 |
 |--------|------|------|------|
 | `id` | `UUID` | PK | 记录唯一标识 |
 | `user_id` | `UUID` | FK → users.id, UNIQUE, NOT NULL | 关联用户（1:1） |
-| `tech_skill_score` | `NUMERIC(4,2)` | NULL | 技术能力综合得分（0~10） |
-| `communication_score` | `NUMERIC(4,2)` | NULL | 沟通协作得分（0~10） |
-| `time_commitment_score` | `NUMERIC(4,2)` | NULL | 时间投入度得分（0~10） |
-| `innovation_score` | `NUMERIC(4,2)` | NULL | 创新思维得分（0~10） |
-| `stress_tolerance_score` | `NUMERIC(4,2)` | NULL | 抗压能力得分（0~10） |
-| `leadership_score` | `NUMERIC(4,2)` | NULL | 领导力得分（0~10） |
-| `preferred_role` | `VARCHAR(50)` | NULL | 倾向角色，如 "技术开发"、"项目管理"、"设计" |
-| `extended_scores` | `JSONB` | NULL | 扩展维度得分，存储未在固定列中定义的动态维度 |
-| `profile_version` | `INTEGER` | NOT NULL, DEFAULT 1 | 画像版本号，每次更新递增 |
-| `last_session_id` | `UUID` | FK → match_sessions.id, NULL | 更新本画像的最近一次会话 |
+| `skill_modeling` | `NUMERIC(4,2)` | NULL | 技能向量 — 数学建模实力（0~10） |
+| `skill_coding` | `NUMERIC(4,2)` | NULL | 技能向量 — 编程实现（0~10） |
+| `skill_writing` | `NUMERIC(4,2)` | NULL | 技能向量 — 论文排版（0~10） |
+| `personality_leader` | `NUMERIC(4,2)` | NULL | 性格动能 — 领导者倾向（0~10） |
+| `personality_supporter` | `NUMERIC(4,2)` | NULL | 性格动能 — 支持者倾向（0~10） |
+| `personality_executor` | `NUMERIC(4,2)` | NULL | 性格动能 — 执行者倾向（0~10） |
+| `strength_competition_count` | `INTEGER` | NULL, CHECK ≥ 0 | 绝对实力 — 参赛次数 |
+| `strength_award_count` | `INTEGER` | NULL, CHECK ≥ 0 | 绝对实力 — 获奖次数 |
+| `strength_ambition` | `NUMERIC(4,2)` | NULL | 绝对实力 — 获奖欲望（0~10） |
+| `strength_major_relevant` | `NUMERIC(4,2)` | NULL | 绝对实力 — 专业对口程度（0~10） |
+| `preferred_role` | `VARCHAR(20)` | NULL | 前置问题结果：建模手 / 论文手 / 编程手 / 无倾向 |
+| `raw_answers` | `JSONB` | NULL | 原始选择题答案备份 |
 | `updated_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT now() | 最后更新时间 |
 
 ```sql
 CREATE TABLE user_profiles (
-    id                      UUID          PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id                 UUID          NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-    tech_skill_score        NUMERIC(4,2)  CHECK (tech_skill_score    BETWEEN 0 AND 10),
-    communication_score     NUMERIC(4,2)  CHECK (communication_score BETWEEN 0 AND 10),
-    time_commitment_score   NUMERIC(4,2)  CHECK (time_commitment_score BETWEEN 0 AND 10),
-    innovation_score        NUMERIC(4,2)  CHECK (innovation_score    BETWEEN 0 AND 10),
-    stress_tolerance_score  NUMERIC(4,2)  CHECK (stress_tolerance_score BETWEEN 0 AND 10),
-    leadership_score        NUMERIC(4,2)  CHECK (leadership_score    BETWEEN 0 AND 10),
-    preferred_role          VARCHAR(50),
-    extended_scores         JSONB,
-    profile_version         INTEGER       NOT NULL DEFAULT 1,
-    last_session_id         UUID          REFERENCES match_sessions(id),
-    updated_at              TIMESTAMPTZ   NOT NULL DEFAULT now()
+    id                     UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id                UUID         NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    skill_modeling         NUMERIC(4,2) CHECK (skill_modeling        BETWEEN 0 AND 10),
+    skill_coding           NUMERIC(4,2) CHECK (skill_coding          BETWEEN 0 AND 10),
+    skill_writing          NUMERIC(4,2) CHECK (skill_writing         BETWEEN 0 AND 10),
+    personality_leader     NUMERIC(4,2) CHECK (personality_leader    BETWEEN 0 AND 10),
+    personality_supporter  NUMERIC(4,2) CHECK (personality_supporter BETWEEN 0 AND 10),
+    personality_executor   NUMERIC(4,2) CHECK (personality_executor  BETWEEN 0 AND 10),
+    strength_competition_count INTEGER CHECK (strength_competition_count >= 0),
+    strength_award_count       INTEGER CHECK (strength_award_count >= 0),
+    strength_ambition       NUMERIC(4,2) CHECK (strength_ambition BETWEEN 0 AND 10),
+    strength_major_relevant NUMERIC(4,2) CHECK (strength_major_relevant  BETWEEN 0 AND 10),
+    preferred_role         VARCHAR(20),
+    raw_answers            JSONB,
+    updated_at             TIMESTAMPTZ  NOT NULL DEFAULT now()
 );
 ```
 
 ---
 
-### 8. `match_results` — 匹配推荐结果表
+### 5. `match_results` — 匹配推荐结果表
 
-> 存储算法为用户推荐的 3 位潜在队友，是最终呈现给用户的数据。
+> 效用函数算法运行后写入，固定 3 条（rank 1/2/3），是最终呈现给用户的数据。
 
 | 字段名 | 类型 | 约束 | 说明 |
 |--------|------|------|------|
 | `id` | `UUID` | PK | 记录唯一标识 |
 | `session_id` | `UUID` | FK → match_sessions.id, NOT NULL | 所属匹配会话 |
-| `recommended_user_id` | `UUID` | FK → users.id, NOT NULL | 被推荐的潜在队友用户 ID |
+| `recommended_user_id` | `UUID` | FK → users.id, NOT NULL | 被推荐的候选人用户 ID |
 | `rank` | `SMALLINT` | NOT NULL, CHECK (rank IN (1,2,3)) | 推荐排名，固定为 1、2、3 |
-| `match_score` | `NUMERIC(5,4)` | NOT NULL | 匹配算法计算的综合匹配度（0.0000~1.0000） |
-| `match_reasons` | `JSONB` | NOT NULL | 各维度匹配分析，格式见下方说明 |
+| `match_score` | `NUMERIC(5,4)` | NOT NULL | 效用函数计算的综合匹配度（0.0000~1.0000） |
+| `match_reasons` | `JSONB` | NOT NULL | 三大维度匹配分析，格式见下方说明 |
 | `is_viewed` | `BOOLEAN` | NOT NULL, DEFAULT FALSE | 用户是否已查看该推荐 |
 | `created_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT now() | 推荐生成时间 |
 
 **`match_reasons` JSONB 格式示例：**
 ```json
 {
-  "summary": "技术互补，沟通风格契合，时间投入度高度一致",
+  "summary": "技能互补（建模手+编程手），性格一致，实力均衡",
   "dimension_breakdown": [
-    { "dimension": "技术能力",   "score": 0.85, "comment": "两人技术栈互补" },
-    { "dimension": "沟通协作",   "score": 0.92, "comment": "沟通风格高度匹配" },
-    { "dimension": "时间投入度", "score": 0.88, "comment": "均能全力投入备赛" }
+    { "dimension": "技能向量", "score": 0.90, "comment": "技能正交互补，覆盖建模/编程/排版" },
+    { "dimension": "性格动能", "score": 0.85, "comment": "领导者倾向相近，协作摩擦小" },
+    { "dimension": "绝对实力", "score": 0.80, "comment": "均有比赛经验，夺冠欲望一致" }
   ]
 }
 ```
@@ -320,34 +228,38 @@ CREATE INDEX idx_match_results_session_id ON match_results(session_id);
 ## 完整业务流程与表关联时序
 
 ```
-1. 用户注册
-   → 写入 users
-   → 写入 user_profiles（得分字段暂为 NULL）
-   → 写入 user_competition_preferences
+Phase I：用户信息采集
 
-2. 用户发起匹配
+1. 提交基础信息（OnboardingPage）
+   → 写入 users（6 项基础信息）
+   → 写入 user_profiles（三大向量字段全为 NULL）
    → 创建 match_sessions（status = 'questioning'）
+   → 返回 user_id + session_id 给前端
 
-3. AI 动态提问（循环 3~5 轮）
-   → 读取 competition_types.name + evaluation_dimensions（构建 AI 提示词）
-   → 每轮写入 question_answers.question_text
-   → 用户回答后更新 question_answers.answer_text + answered_at
-   → AI 评分后更新 question_answers.ai_score + ai_score_reasoning
+2. 机动前置选择题（PreQuestionPage，1-2 题）
+   → 写入 question_answers（phase = 'pre'）
+   → 更新 user_profiles.preferred_role（如 "建模手"）
 
-4. 提问结束，构建用户画像
-   → 汇总 question_answers.ai_score → 更新 user_profiles 各得分字段
-   → 生成 match_sessions.user_vector（JSONB 向量）
+3. AI 向量收集选择题（AIQuestionPage）
+   → AI 生成选择题，写入 question_answers（phase = 'ai'）
+   → 用户作答后更新 question_answers.selected_option + answered_at
+   → 全部完成后，将选项映射为数值，更新 user_profiles 三大向量字段
+   → 生成 match_sessions.user_vector（JSONB 格式）
+
+Phase II：匹配算法
+
+4. 触发匹配（MatchWaitingPage）
    → 更新 match_sessions.status = 'matching'
-
-5. 运行匹配算法
-   → 读取所有 user_profiles（同比赛类型的候选用户）
-   → 计算相似度/互补度 → 取 Top 3
-   → 写入 match_results（rank 1/2/3）
+   → 读取所有 user_profiles（Mock 数据库中的候选人）
+   → 通过平行与正交的效用函数计算最优组合
+   → 写入 match_results（rank 1/2/3，固定 3 条）
    → 更新 match_sessions.status = 'completed' + completed_at
 
-6. 展示结果
-   → 读取 match_results + users（nickname, school, major, avatar_url）
-   → 展示匹配度、维度分析、联系方式入口
+Phase III：展示结果
+
+5. 展示推荐结果（MatchResultPage）
+   → 读取 match_results + users（name, major, grade, contact_info）
+   → 展示匹配度、三大维度分析、联系方式
    → 更新 match_results.is_viewed = TRUE
 ```
 
@@ -355,11 +267,15 @@ CREATE INDEX idx_match_results_session_id ON match_results(session_id);
 
 ## 注意事项
 
-1. **`user_profiles` 得分不随每次会话重置**，而是加权平均更新，保留历史积累。
-2. **`evaluation_dimensions` 表由后端管理员接口维护**，前端无权读写。
-3. **`match_sessions.user_vector`** 存储归一化后的浮点数组（JSONB 格式），示例：
+1. **`user_profiles` 三大向量**在 AI 题全部完成后一次性写入，不做增量更新。
+2. **`match_sessions.user_vector`** 存储三大向量的归一化结果（JSONB），示例：
    ```json
-   { "tech_skill": 0.82, "communication": 0.75, "time_commitment": 0.90, "innovation": 0.65 }
+   {
+     "skill": {"modeling": 0.8, "coding": 0.5, "writing": 0.3},
+     "personality": {"leader": 0.7, "supporter": 0.5, "executor": 0.6},
+     "strength": {"experience": 0.9, "has_award": true, "ambition": 0.8}
+   }
    ```
-4. **推荐结果固定 3 条**，由后端常量 `MAX_RECOMMEND_COUNT = 3` 控制，禁止在代码中硬编码数字 `3`。
-5. 所有主键均为 **UUID**，禁止使用自增 ID 作为对外接口的标识符。
+3. **推荐结果固定 3 条**，由后端常量 `MAX_RECOMMEND_COUNT = 3` 控制，禁止在代码中硬编码数字 `3`。
+4. 所有主键均为 **UUID**，禁止使用自增 ID 作为对外接口标识符。
+5. **Mock 数据库**：开发阶段在 `user_profiles` 表中预先插入若干测试用户数据，匹配算法从中取候选人。
