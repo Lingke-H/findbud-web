@@ -14,7 +14,7 @@ from app.database import get_db
 from app.models.user import User, UserProfile
 from app.models.session import MatchSession
 from app.services import ai_service
-from app.services.match_service import UserVector, find_top_matches
+from app.services.match_service import UserProfile as MatchProfile, find_top_matches
 from app.schemas.session import (
     QuestionsResponse,
     SessionQuestion,
@@ -102,15 +102,6 @@ _MVP_QUESTIONS: list[SessionQuestion] = [
 # 选项 ID → 维度分数（0–10）
 _OPTION_SCORES: dict[str, float] = {"A": 9.0, "B": 7.0, "C": 5.0, "D": 3.0}
 
-# 匹配算法使用的维度权重（针对数学建模竞赛调优）
-_MATCH_WEIGHTS: dict[str, float] = {
-    "skill_modeling":     1.50,
-    "skill_coding":       1.30,
-    "skill_writing":      1.00,
-    "personality_leader": 1.20,
-    "strength_ambition":  1.00,
-}
-
 # Hackathon 保命 Mock 候选人（DB 用户不足 3 人时自动补充）
 _MOCK_CANDIDATES: list[dict] = [
     {
@@ -119,10 +110,9 @@ _MOCK_CANDIDATES: list[dict] = [
         "grade": "大三",
         "major": "数学与应用数学",
         "contact_info": "WeChat: zhangy2024",
-        "scores": {
-            "skill_modeling": 9.0, "skill_coding": 5.0,
-            "skill_writing": 7.0, "personality_leader": 7.0, "strength_ambition": 9.0,
-        },
+        "skill_modeling": 9.0, "skill_coding": 5.0, "skill_writing": 7.0,
+        "personality_leader": 7.0, "personality_executor": 6.0, "personality_supporter": 4.0,
+        "strength_competition_count": 3, "strength_award_count": 1, "strength_ambition": 9.0,
     },
     {
         "user_id": "mock-002",
@@ -130,10 +120,9 @@ _MOCK_CANDIDATES: list[dict] = [
         "grade": "大二",
         "major": "计算机科学与技术",
         "contact_info": "WeChat: lzq_coding",
-        "scores": {
-            "skill_modeling": 6.0, "skill_coding": 10.0,
-            "skill_writing": 4.0, "personality_leader": 7.0, "strength_ambition": 7.0,
-        },
+        "skill_modeling": 6.0, "skill_coding": 10.0, "skill_writing": 4.0,
+        "personality_leader": 4.0, "personality_executor": 9.0, "personality_supporter": 5.0,
+        "strength_competition_count": 2, "strength_award_count": 0, "strength_ambition": 7.0,
     },
     {
         "user_id": "mock-003",
@@ -141,10 +130,9 @@ _MOCK_CANDIDATES: list[dict] = [
         "grade": "大四",
         "major": "统计学",
         "contact_info": "email: wsy@example.com",
-        "scores": {
-            "skill_modeling": 7.0, "skill_coding": 6.0,
-            "skill_writing": 9.0, "personality_leader": 9.0, "strength_ambition": 7.0,
-        },
+        "skill_modeling": 7.0, "skill_coding": 6.0, "skill_writing": 9.0,
+        "personality_leader": 5.0, "personality_executor": 5.0, "personality_supporter": 9.0,
+        "strength_competition_count": 5, "strength_award_count": 2, "strength_ambition": 7.0,
     },
 ]
 
@@ -247,7 +235,7 @@ def submit_answers(
             db.rollback()
 
     # ── 4. 查询其他用户画像 ──
-    db_candidate_vecs: list[UserVector] = []
+    db_candidate_profiles: list[MatchProfile] = []
     db_candidate_info: dict[str, dict] = {}
 
     try:
@@ -259,69 +247,99 @@ def submit_answers(
             query = query.filter(User.id != user_uuid)
 
         for user, profile in query.all():
-            scores = {
-                "skill_modeling":     float(profile.skill_modeling     or 5.0),
-                "skill_coding":       float(profile.skill_coding       or 5.0),
-                "skill_writing":      float(profile.skill_writing      or 5.0),
-                "personality_leader": float(profile.personality_leader or 5.0),
-                "strength_ambition":  float(profile.strength_ambition  or 5.0),
-            }
             uid = str(user.id)
-            db_candidate_vecs.append(UserVector(user_id=uid, dimension_scores=scores))
+            db_candidate_profiles.append(MatchProfile(
+                user_id=uid,
+                skill_modeling=float(profile.skill_modeling or 5.0),
+                skill_coding=float(profile.skill_coding or 5.0),
+                skill_writing=float(profile.skill_writing or 5.0),
+                personality_leader=float(profile.personality_leader or 5.0),
+                personality_executor=float(profile.personality_executor or 5.0),
+                personality_supporter=float(profile.personality_supporter or 5.0),
+                strength_competition_count=int(profile.strength_competition_count or 0),
+                strength_award_count=int(profile.strength_award_count or 0),
+                strength_ambition=float(profile.strength_ambition or 5.0),
+            ))
             db_candidate_info[uid] = {
-                "user_id": uid,
-                "name": user.name,
-                "grade": user.grade,
+                "name": user.name, "grade": user.grade,
                 "major": user.major,
                 "contact_info": user.contact_info or "请通过平台联系",
-                "scores": scores,
             }
     except Exception:
         pass
 
     # ── 5. 补充 Mock 候选人（不足 3 个时） ──
-    all_vecs = list(db_candidate_vecs)
+    all_profiles = list(db_candidate_profiles)
     all_info = dict(db_candidate_info)
 
     for mock in _MOCK_CANDIDATES:
-        if len(all_vecs) >= 3:
+        if len(all_profiles) >= 3:
             break
-        all_vecs.append(UserVector(user_id=mock["user_id"], dimension_scores=mock["scores"]))
-        all_info[mock["user_id"]] = mock
+        all_profiles.append(MatchProfile(
+            user_id=mock["user_id"],
+            skill_modeling=mock["skill_modeling"],
+            skill_coding=mock["skill_coding"],
+            skill_writing=mock["skill_writing"],
+            personality_leader=mock["personality_leader"],
+            personality_executor=mock["personality_executor"],
+            personality_supporter=mock["personality_supporter"],
+            strength_competition_count=mock["strength_competition_count"],
+            strength_award_count=mock["strength_award_count"],
+            strength_ambition=mock["strength_ambition"],
+        ))
+        all_info[mock["user_id"]] = {
+            "name": mock["name"], "grade": mock["grade"],
+            "major": mock["major"], "contact_info": mock["contact_info"],
+        }
 
     # ── 6. 运行匹配算法 ──
-    current_vec = UserVector(user_id=body.user_id, dimension_scores=user_dim_scores)
-    top3_matches = find_top_matches(
-        current_user=current_vec,
-        all_candidates=all_vecs,
-        dimension_weights=_MATCH_WEIGHTS,
+    current_profile = MatchProfile(
+        user_id=body.user_id,
+        skill_modeling=user_dim_scores.get("skill_modeling", 5.0),
+        skill_coding=user_dim_scores.get("skill_coding", 5.0),
+        skill_writing=user_dim_scores.get("skill_writing", 5.0),
+        personality_leader=user_dim_scores.get("personality_leader", 5.0),
+        personality_executor=5.0,
+        personality_supporter=5.0,
+        strength_competition_count=0,
+        strength_award_count=0,
+        strength_ambition=user_dim_scores.get("strength_ambition", 5.0),
     )
+    match_output = find_top_matches(user_a=current_profile, candidates=all_profiles)
 
     # ── 7. 组装响应（含雷达图） ──
     dim_labels = {d["key"]: d["label"] for d in _DIMS}
     result_candidates: list[CandidateResult] = []
 
-    for match in top3_matches:
-        info = all_info.get(match.candidate_user_id, {})
-        cand_scores: dict[str, float] = info.get("scores", dict.fromkeys(user_dim_scores, 5.0))
-
+    for match in match_output.results:
+        info = all_info.get(match.recommended_user_id, {})
+        # 从候选人 MatchProfile 取维度分数用于雷达图
+        cand_prof = next((p for p in all_profiles if p.user_id == match.recommended_user_id), None)
+        cand_dim = {
+            "skill_modeling":     cand_prof.skill_modeling     if cand_prof else 5.0,
+            "skill_coding":       cand_prof.skill_coding       if cand_prof else 5.0,
+            "skill_writing":      cand_prof.skill_writing      if cand_prof else 5.0,
+            "personality_leader": cand_prof.personality_leader if cand_prof else 5.0,
+            "strength_ambition":  cand_prof.strength_ambition  if cand_prof else 5.0,
+        }
         radar = [
             RadarDim(
                 dimension=dim_labels.get(dim_key, dim_key),
                 user=int(round(user_dim_scores.get(dim_key, 5.0))),
-                candidate=int(round(cand_scores.get(dim_key, 5.0))),
+                candidate=int(round(cand_dim.get(dim_key, 5.0))),
             )
             for dim_key in user_dim_scores
         ]
+        summary = match.match_reasons.get("summary", "综合匹配度较高")
 
         result_candidates.append(CandidateResult(
-            user_id=match.candidate_user_id,
+            user_id=match.recommended_user_id,
             name=info.get("name", "候选人"),
             grade=info.get("grade", "-"),
             major=info.get("major", "-"),
             match_score=int(round(match.match_score * 100)),
             contact_info=info.get("contact_info", "请通过平台联系"),
-            summary=match.summary,
+            summary=summary,
             radar=radar,
         ))
 

@@ -208,14 +208,17 @@ export default function OnboardingPage() {
     setLoading(true)
     setError('')
     let userId: string = crypto.randomUUID()  // 本地兜底 ID，后端就绪时替换
+    let sessionId: string = ''
     try {
       const res = await submitBaseInfo(form)
       userId = res.user_id
+      sessionId = res.session_id
     } catch {
       // 后端不可用时使用本地 UUID，保证流程不中断
     }
     localStorage.setItem('user_id', userId)
-    navigate('/question', { state: { user_id: userId } })
+    localStorage.setItem('session_id', sessionId)
+    navigate('/question', { state: { user_id: userId, session_id: sessionId } })
     setLoading(false)
   }
 

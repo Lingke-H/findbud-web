@@ -1,4 +1,4 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000'
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ''  // 空字符串 = 相对路径，走 Vite proxy 避免 CORS
 
 export interface QuestionOption {
   option_id: string
@@ -33,27 +33,13 @@ const MVP_FALLBACK_QUESTIONS: PreQuestion[] = [
 
 /** 获取前置问题列表，后端就绪前返回本地 MVP 数据 */
 export async function fetchPreQuestions(_userId: string): Promise<PreQuestion[]> {
-  // TODO: 替换为真实后端接口
-  // const res = await fetch(`${API_BASE_URL}/api/v1/pre-questions?user_id=${_userId}`)
-  // if (!res.ok) throw new Error(`获取题目失败 (${res.status})`)
-  // return res.json()
-
-  // 模拟网络延迟（后端就绪后删除此行，取消注释上方真实请求）
   console.debug('[fetchPreQuestions] using mock data, API_BASE_URL=', API_BASE_URL)
   await new Promise(r => setTimeout(r, 600))
   return MVP_FALLBACK_QUESTIONS
 }
 
-/** 提交前置问题答案 */
+/** 提交前置问题答案（MVP 阶段静默，不阻断流程） */
 export async function submitPreAnswer(payload: SubmitPreAnswerPayload): Promise<void> {
-  // TODO: 替换为真实后端接口
-  // const res = await fetch(`${API_BASE_URL}/api/v1/pre-answers`, {
-  //   method: 'POST',
-  //   headers: { 'Content-Type': 'application/json' },
-  //   body: JSON.stringify(payload),
-  // })
-  // if (!res.ok) throw new Error(`提交答案失败 (${res.status})`)
-
   await new Promise(r => setTimeout(r, 400))
   console.log('[submitPreAnswer] payload:', payload)
 }
@@ -132,30 +118,61 @@ const MVP_AI_QUESTIONS: AIQuestion[] = [
   },
 ]
 
-/** 获取 AI 选择题列表，后端就绪前使用 MVP 本地数据 */
-export async function fetchAIQuestions(_userId: string): Promise<AIQuestion[]> {
-  // TODO: 替换为真实后端接口（AI 动态生成）
-  // const res = await fetch(`${API_BASE_URL}/api/v1/sessions/${sessionId}/questions`)
-  // if (!res.ok) throw new Error(`获取题目失败 (${res.status})`)
-  // return res.json()
-
-  console.debug('[fetchAIQuestions] using mock, API_BASE_URL=', API_BASE_URL)
-  await new Promise(r => setTimeout(r, 700))
+/** 获取 AI 选择题列表；session 有效时调用后端，12s 超时或失败后降级 MVP 本地数据 */
+export async function fetchAIQuestions(_userId: string, sessionId?: string): Promise<AIQuestion[]> {
+  if (sessionId) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 35000)  // 35s 超时（DeepSeek 较慢）
+    try {
+      const res = await fetch(
+        `${API_BASE_URL}/api/v1/sessions/${sessionId}/questions`,
+        { signal: controller.signal },
+      )
+      clearTimeout(timer)
+      if (res.ok) {
+        const data = await res.json() as { questions: AIQuestion[] }
+        if (data.questions?.length) return data.questions
+      }
+    } catch {
+      clearTimeout(timer)
+      // 超时或后端不可用时降级到本地 mock
+    }
+  }
+  console.debug('[fetchAIQuestions] using mock fallback, API_BASE_URL=', API_BASE_URL)
+  await new Promise(r => setTimeout(r, 300))
   return MVP_AI_QUESTIONS
 }
 
-/** 提交全部 AI 问答答案 */
-export async function submitAIAnswers(payload: AnswerPayload): Promise<{ session_id: string }> {
-  // TODO: 替换为真实后端接口
-  // const res = await fetch(`${API_BASE_URL}/api/v1/sessions/${payload.session_id}/submit`, {
-  //   method: 'POST',
-  //   headers: { 'Content-Type': 'application/json' },
-  //   body: JSON.stringify(payload),
-  // })
-  // if (!res.ok) throw new Error(`提交失败 (${res.status})`)
-  // return res.json()
+export interface BackendCandidate {
+  user_id: string
+  name: string
+  grade: string
+  major: string
+  match_score: number
+  contact_info: string
+  summary: string
+  radar: { dimension: string; user: number; candidate: number }[]
+}
 
+export interface SubmitAIAnswersResponse {
+  session_id: string
+  top3: BackendCandidate[]
+}
+
+/** 提交全部 AI 问答答案，返回 session_id 与 Top3 匹配结果 */
+export async function submitAIAnswers(payload: AnswerPayload): Promise<SubmitAIAnswersResponse> {
+  const sid = payload.session_id ?? 'mock-session-id'
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/v1/sessions/${sid}/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (res.ok) return res.json() as Promise<SubmitAIAnswersResponse>
+  } catch {
+    // 后端不可用时静默降级，使用 Mock 结果
+  }
+  console.log('[submitAIAnswers] fallback to mock, payload:', payload)
   await new Promise(r => setTimeout(r, 800))
-  console.log('[submitAIAnswers] payload:', payload)
-  return { session_id: payload.session_id ?? 'mock-session-id' }
+  return { session_id: sid, top3: [] }  // 空 top3 → MatchResultPage 用前端 MOCK_TOP3_DATA
 }

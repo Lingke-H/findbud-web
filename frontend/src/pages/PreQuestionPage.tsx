@@ -208,6 +208,7 @@ export default function PreQuestionPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const userId: string = location.state?.user_id ?? localStorage.getItem('user_id') ?? ''
+  const sessionId: string = location.state?.session_id ?? localStorage.getItem('session_id') ?? ''
 
   const [loadState, setLoadState] = useState<LoadState>('loading')
   const [questions, setQuestions] = useState<PreQuestion[]>([])
@@ -245,15 +246,14 @@ export default function PreQuestionPage() {
       })
       if (isLast) {
         navigate('/ai-question', {
-          state: { user_id: userId, pre_answers: answers },
+          state: { user_id: userId, session_id: sessionId, pre_answers: answers },
         })
       } else {
         setCurrentIndex(i => i + 1)
       }
     } catch {
-      // 提交失败不阻断流程，直接跳转（后端就绪后可改为显示错误提示）
       navigate('/ai-question', {
-        state: { user_id: userId, pre_answers: answers },
+        state: { user_id: userId, session_id: sessionId, pre_answers: answers },
       })
     } finally {
       setSubmitting(false)
