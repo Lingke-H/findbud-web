@@ -125,7 +125,7 @@ def _compute_complementarity_index(
 
 # ========== 子模块3：独立标签预处理与相似度计算（步骤4） ==========
 
-def _logistic_map(x: float, k: float = 0.3, x0: float = 5.0) -> float:
+def _logistic_map(x: float, k: float = 1.5, x0: float = 2.5) -> float:
     """
     Logistic 函数，将比赛场次（非负整数）非线性压缩到 (0, 1) 区间。
     k 控制曲线增长速度，x0 控制中点位置（场次=x0 时映射值为 0.5）。
