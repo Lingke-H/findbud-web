@@ -14,15 +14,15 @@ from alembic import context
 from dotenv import load_dotenv
 
 # 加载 .env 环境变量
-load_dotenv()
+load_dotenv(encoding="utf-8")
 
 # 将 backend/ 目录加入 Python 路径，使 app 模块可被导入
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # 导入所有 Model，使 Alembic 能感知到表结构变化
-# 当 app/models/ 下有新的 Model 文件时，在此处补充导入
 from app.database import Base  # noqa: F401
-# from app.models import users, match_sessions  # 建好 Model 后取消注释
+from app.models.user import User, UserProfile  # noqa: F401
+from app.models.session import MatchSession, QuestionAnswer, MatchResult  # noqa: F401
 
 # Alembic 配置对象
 config = context.config

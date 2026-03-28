@@ -12,8 +12,10 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 
+from app.routers import user_router
+
 # 加载环境变量
-load_dotenv()
+load_dotenv(encoding="utf-8")
 
 # 创建 FastAPI 应用实例
 app = FastAPI(
@@ -43,9 +45,8 @@ def health_check():
     return {"status": "ok", "message": "FindBud 后端服务运行正常"}
 
 
-# ========== 注册路由模块（后续接口文件创建后在这里导入） ==========
-# 示例：
-# from app.routers import users, match_sessions, competition_types
-# app.include_router(users.router, prefix="/api/v1", tags=["用户"])
-# app.include_router(match_sessions.router, prefix="/api/v1", tags=["匹配会话"])
-# app.include_router(competition_types.router, prefix="/api/v1", tags=["比赛类型"])
+# ========== 注册路由模块 ==========
+
+app.include_router(user_router.router, prefix="/api/v1")
+# hlk 完成后在这里追加：
+# app.include_router(match_router.router, prefix="/api/v1")
