@@ -3,7 +3,7 @@
 > **用途**：将此文件直接喂给 AI（Cursor/Copilot），确保前后端三人操作同一数据模型。
 > **数据库**：PostgreSQL 15+
 > **字段类型约定**：`UUID` 主键、`TIMESTAMPTZ` 时间戳、`JSONB` 存储结构化动态数据。
-> **MVP 场景**：数学建模比赛搭子（宁波诺丁汉大学）
+> **MVP 场景**：数学建模比赛搭子 / 雅思学习搭子（宁波诺丁汉大学）
 
 ---
 
@@ -18,8 +18,12 @@ users
   │         │
   │         └──< match_results >── users (被推荐的候选人)
   │
-  └──── user_profiles (1:1，存储三大向量维度)
+  ├──── user_profiles       (1:1，数学建模搭子向量画像)
+  │
+  └──── ielts_user_profiles  (1:1，雅思学习搭子向量画像)
 ```
+
+> `team_goal` 字段决定用哪张 profile 表：`'数学建模大赛'` → `user_profiles`；`'雅思学习搭子'` → `ielts_user_profiles`。
 
 ---
 
@@ -279,3 +283,52 @@ Phase III：展示结果
 3. **推荐结果固定 3 条**，由后端常量 `MAX_RECOMMEND_COUNT = 3` 控制，禁止在代码中硬编码数字 `3`。
 4. 所有主键均为 **UUID**，禁止使用自增 ID 作为对外接口标识符。
 5. **Mock 数据库**：开发阶段在 `user_profiles` 表中预先插入若干测试用户数据，匹配算法从中取候选人。
+
+---
+
+### 6. `ielts_user_profiles` — 雅思学习搭子向量画像表（1:1 与 users）
+
+> 存储雅思搭子目标用户的分类标签画像，结构平行于 `user_profiles`，互不干扰。
+> 仅当 `users.team_goal = '雅思学习搭子'` 的用户填写时创建。
+
+| 字段名 | 类型 | 约束 | 说明 |
+|--------|------|------|------|
+| `id` | `UUID` | PK | 记录唯一标识 |
+| `user_id` | `UUID` | FK → users.id, UNIQUE, NOT NULL | 关联用户（1:1） |
+| `skill_listening` | `NUMERIC(4,2)` | NULL, CHECK 0~10 | 互斥技能 — 听力（擅长题型组） |
+| `skill_reading` | `NUMERIC(4,2)` | NULL, CHECK 0~10 | 互斥技能 — 阅读（擅长题型组） |
+| `skill_writing` | `NUMERIC(4,2)` | NULL, CHECK 0~10 | 互斥技能 — 写作（擅长题型组） |
+| `skill_speaking` | `NUMERIC(4,2)` | NULL, CHECK 0~10 | 互斥技能 — 口语（擅长题型组） |
+| `personality_planner` | `NUMERIC(4,2)` | NULL, CHECK 0~10 | 互斥性格 — 计划制定及推动者 |
+| `personality_resourcer` | `NUMERIC(4,2)` | NULL, CHECK 0~10 | 互斥性格 — 资源获取者 |
+| `personality_coordinator` | `NUMERIC(4,2)` | NULL, CHECK 0~10 | 互斥性格 — 协调者 |
+| `strength_fluency` | `NUMERIC(4,2)` | NULL, CHECK 0~10 | 独立标签 — 日常英语口语顺畅程度 |
+| `strength_has_ielts_exp` | `BOOLEAN` | NULL | 独立标签 — 是否有雅思考试经历 |
+| `strength_willing_training` | `BOOLEAN` | NULL | 独立标签 — 是否愿意一起参加培训班 |
+| `strength_weekly_hours` | `INTEGER` | NULL, CHECK ≥ 0 | 独立标签 — 每周可投入共同学习时长（小时） |
+| `strength_target_score` | `NUMERIC(4,2)` | NULL, CHECK 0~10 | 独立标签 — 目标成绩期望（0=随意，10=最高分） |
+| `preferred_role` | `VARCHAR(20)` | NULL | 前置问题结果：听力/阅读/写作/口语/无倾向 |
+| `raw_answers` | `JSONB` | NULL | 原始选择题答案备份 |
+| `updated_at` | `TIMESTAMPTZ` | NOT NULL, DEFAULT now() | 最后更新时间 |
+
+```sql
+CREATE TABLE ielts_user_profiles (
+    id                      UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id                 UUID         NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    skill_listening         NUMERIC(4,2) CHECK (skill_listening         BETWEEN 0 AND 10),
+    skill_reading           NUMERIC(4,2) CHECK (skill_reading           BETWEEN 0 AND 10),
+    skill_writing           NUMERIC(4,2) CHECK (skill_writing           BETWEEN 0 AND 10),
+    skill_speaking          NUMERIC(4,2) CHECK (skill_speaking          BETWEEN 0 AND 10),
+    personality_planner     NUMERIC(4,2) CHECK (personality_planner     BETWEEN 0 AND 10),
+    personality_resourcer   NUMERIC(4,2) CHECK (personality_resourcer   BETWEEN 0 AND 10),
+    personality_coordinator NUMERIC(4,2) CHECK (personality_coordinator BETWEEN 0 AND 10),
+    strength_fluency        NUMERIC(4,2) CHECK (strength_fluency        BETWEEN 0 AND 10),
+    strength_has_ielts_exp     BOOLEAN,
+    strength_willing_training  BOOLEAN,
+    strength_weekly_hours      INTEGER CHECK (strength_weekly_hours >= 0),
+    strength_target_score   NUMERIC(4,2) CHECK (strength_target_score   BETWEEN 0 AND 10),
+    preferred_role          VARCHAR(20),
+    raw_answers             JSONB,
+    updated_at              TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+```

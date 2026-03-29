@@ -20,17 +20,19 @@
     主客观权重融合比例由 OBJECTIVE_WEIGHT_RATIO 控制，主观权重由 SUBJECTIVE_WEIGHTS 指定。
 """
 
-import math
 from dataclasses import dataclass
 
-# ========== 常量 ==========
-
-# 固定推荐队友数量，全项目统一以此常量为准
-MAX_RECOMMEND_COUNT: int = 3
-
-# 主客观权重融合系数（0.0 = 纯主观，1.0 = 纯客观，默认 1:1）
-# ⚙️ 开发者：如需调整主客观比例，只需修改此常量，无需改动计算逻辑
-OBJECTIVE_WEIGHT_RATIO: float = 0.5
+from app.services.match_engine import (
+    MAX_RECOMMEND_COUNT,
+    OBJECTIVE_WEIGHT_RATIO,
+    MatchResult,
+    MatchOutput,
+    compute_complementarity_index,
+    logistic_map,
+    normalize_column,
+    compute_entropy_weights,
+    blend_weights,
+)
 
 # 主观权重字典（键名须与指标名完全一致，值无需归一化，程序会自动处理）
 # ⚙️ 开发者：如需调整各维度主观权重，只需修改此字典，无需改动计算逻辑
@@ -75,65 +77,6 @@ class UserProfile:
     preferred_role: str = ""               # 前置问题结果：建模手/论文手/编程手/无倾向
 
 
-@dataclass
-class MatchResult:
-    """
-    单个候选用户的匹配结果，对应数据库 match_results 表的一行。
-    字段名与表列名严格对齐，可直接用于 ORM 写入。
-    """
-    recommended_user_id: str  # 被推荐候选人 UUID（对应 match_results.recommended_user_id）
-    rank: int                 # 推荐排名（1~MAX_RECOMMEND_COUNT，对应 match_results.rank）
-    match_score: float        # 综合效用函数值（0~1，对应 match_results.match_score）
-    match_reasons: dict       # 三大维度分析，JSONB 格式（对应 match_results.match_reasons）
-
-
-@dataclass
-class MatchOutput:
-    """
-    find_top_matches 的最终返回值，包含推荐列表及多样性保证标记。
-    """
-    results: list[MatchResult]
-    # 是否保证了特长标签多样性；候选池不足时为 False，供上层调用者感知
-    diversity_guaranteed: bool = True
-
-
-# ========== 子模块2：互补指数计算（步骤3） ==========
-
-def _cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
-    """
-    计算两个向量的标准余弦相似度。
-    若任一向量为零向量，返回 0.0（无法比较，视为不相似）。
-    """
-    dot = sum(a * b for a, b in zip(vec_a, vec_b))
-    norm_a = math.sqrt(sum(a ** 2 for a in vec_a))
-    norm_b = math.sqrt(sum(b ** 2 for b in vec_b))
-    if norm_a == 0.0 or norm_b == 0.0:
-        return 0.0
-    return dot / (norm_a * norm_b)
-
-
-def _compute_complementarity_index(
-    vec_a: list[float],
-    vec_b: list[float],
-) -> float:
-    """
-    计算一组互斥标签的互补指数：互补指数 = 1 - cosine_similarity(A, B)。
-    两向量越正交（余弦相似度越低），互补性越强，互补指数越高（趋近 1）。
-    """
-    return 1.0 - _cosine_similarity(vec_a, vec_b)
-
-
-# ========== 子模块3：独立标签预处理与相似度计算（步骤4） ==========
-
-def _logistic_map(x: float, k: float = 1.5, x0: float = 2.5) -> float:
-    """
-    Logistic 函数，将比赛场次（非负整数）非线性压缩到 (0, 1) 区间。
-    k 控制曲线增长速度，x0 控制中点位置（场次=x0 时映射值为 0.5）。
-    开发者可根据实际数据分布调整 k 和 x0。
-    """
-    return 1.0 / (1.0 + math.exp(-k * (x - x0)))
-
-
 def _compute_independent_similarities(
     user_a: UserProfile,
     user_b: UserProfile,
@@ -149,8 +92,8 @@ def _compute_independent_similarities(
     未指明特殊映射的独立标签默认使用恒等映射 y = x。
     """
     # 参与比赛场次（对应 strength_competition_count）：先 logistic 映射，再计算相似度
-    mapped_a = _logistic_map(float(user_a.strength_competition_count))
-    mapped_b = _logistic_map(float(user_b.strength_competition_count))
+    mapped_a = logistic_map(float(user_a.strength_competition_count))
+    mapped_b = logistic_map(float(user_b.strength_competition_count))
     experience_sim = 1.0 - abs(mapped_a - mapped_b)
 
     # 是否获奖（对应 strength_award_count）：获奖次数 > 0 视为已获奖，转为 0/1 后计算差异
@@ -166,90 +109,6 @@ def _compute_independent_similarities(
         "是否获奖相似度":     award_sim,
         "获奖欲望相似度":     ambition_sim,
     }
-
-
-# ========== 子模块4：归一化（步骤5） ==========
-
-def _normalize_column(values: list[float]) -> list[float]:
-    """
-    对一列指标值进行 Min-Max 归一化，映射到 [0, 1]。
-    若所有值相等（max == min），视为无差异，全部返回 1.0。
-    """
-    min_v = min(values)
-    max_v = max(values)
-    if max_v == min_v:
-        return [1.0] * len(values)
-    return [(v - min_v) / (max_v - min_v) for v in values]
-
-
-# ========== 子模块5：权重计算（步骤6） ==========
-
-def _compute_entropy_weights(matrix: list[list[float]]) -> list[float]:
-    """
-    熵权法计算各指标的客观权重。
-
-    原理：某指标在各候选用户间差异越大（信息熵越低），
-    对区分候选人的贡献越大，赋予越高客观权重。
-
-    参数:
-        matrix ─ 归一化后的指标矩阵，行=候选用户，列=指标
-
-    返回:
-        各指标客观权重列表，总和为 1.0
-    """
-    n_samples = len(matrix)
-    n_indicators = len(matrix[0]) if matrix else 0
-
-    # 样本数不足时退化为均等权重（无法计算有效信息熵）
-    if n_samples <= 1 or n_indicators == 0:
-        count = n_indicators if n_indicators > 0 else 1
-        return [1.0 / count] * count
-
-    utility_values: list[float] = []
-    for col_idx in range(n_indicators):
-        col = [matrix[row][col_idx] for row in range(n_samples)]
-        col_sum = sum(col)
-
-        # 该列全为 0 时无信息量，信息效用为 0
-        if col_sum == 0.0:
-            utility_values.append(0.0)
-            continue
-
-        # 计算各样本在该指标上的比例 p_ij（加小量防止 log(0)）
-        p_list = [(v + 1e-9) / (col_sum + 1e-9 * n_samples) for v in col]
-
-        # 信息熵 e_j = -1/ln(n) × Σ(p_ij × ln(p_ij))
-        entropy = -sum(p * math.log(p) for p in p_list) / math.log(n_samples)
-
-        # 信息效用值 d_j = 1 - e_j（差异越大，效用越高）
-        utility_values.append(max(0.0, 1.0 - entropy))
-
-    total_utility = sum(utility_values)
-    if total_utility == 0.0:
-        # 所有指标信息效用均为 0，退化为均等权重
-        return [1.0 / n_indicators] * n_indicators
-
-    return [u / total_utility for u in utility_values]
-
-
-def _blend_weights(
-    objective_weights: list[float],
-    subjective_weights: list[float],
-    alpha: float,
-) -> list[float]:
-    """
-    融合客观权重与主观权重：final = alpha × objective + (1 - alpha) × subjective。
-    融合后再次归一化，确保总和严格为 1.0。
-    """
-    blended = [
-        alpha * obj + (1.0 - alpha) * subj
-        for obj, subj in zip(objective_weights, subjective_weights)
-    ]
-    total = sum(blended)
-    if total == 0.0:
-        n = len(blended)
-        return [1.0 / n] * n
-    return [w / total for w in blended]
 
 
 # ========== 特长标签收集（步骤8 辅助函数） ==========
@@ -399,12 +258,12 @@ def find_top_matches(
         # 互斥标签组1：技能向量的余弦正交性（互补指数）
         skill_a = [user_a.skill_modeling, user_a.skill_coding, user_a.skill_writing]
         skill_b = [b.skill_modeling,      b.skill_coding,      b.skill_writing]
-        comp_skill = _compute_complementarity_index(skill_a, skill_b)
+        comp_skill = compute_complementarity_index(skill_a, skill_b)
 
         # 互斥标签组2：性格动能因子的余弦正交性（互补指数）
         pers_a = [user_a.personality_leader, user_a.personality_executor, user_a.personality_supporter]
         pers_b = [b.personality_leader,      b.personality_executor,      b.personality_supporter]
-        comp_personality = _compute_complementarity_index(pers_a, pers_b)
+        comp_personality = compute_complementarity_index(pers_a, pers_b)
 
         # 独立标签：差异越小越好
         indep = _compute_independent_similarities(user_a, b)
@@ -423,13 +282,13 @@ def find_top_matches(
     ]
     for col in range(n_indicators):
         col_values = [raw_matrix[row][col] for row in range(n_candidates)]
-        normalized_col = _normalize_column(col_values)
+        normalized_col = normalize_column(col_values)
         for row in range(n_candidates):
             normalized_matrix[row][col] = normalized_col[row]
 
     # ── 步骤6：计算融合权重 ──
     # 客观权重：熵权法
-    objective_weights: list[float] = _compute_entropy_weights(normalized_matrix)
+    objective_weights: list[float] = compute_entropy_weights(normalized_matrix)
 
     # 主观权重：从 SUBJECTIVE_WEIGHTS 按指标顺序提取并归一化
     raw_subj = [SUBJECTIVE_WEIGHTS.get(name, 0.0) for name in indicator_names]
@@ -441,7 +300,7 @@ def find_top_matches(
     )
 
     # 融合权重（OBJECTIVE_WEIGHT_RATIO 控制主客观比例）
-    final_weights: list[float] = _blend_weights(
+    final_weights: list[float] = blend_weights(
         objective_weights, subjective_weights, OBJECTIVE_WEIGHT_RATIO
     )
 

@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.user import User, UserProfile
+from app.models.user import User, UserProfile, IELTSUserProfile
 from app.models.session import MatchSession
 from app.schemas.user import UserCreate, UserResponse, SessionCreateResponse
 
@@ -50,8 +50,11 @@ def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
     db.add(new_user)
     db.flush()  # 获取 new_user.id，不提交事务
 
-    # 初始化空白向量画像（向量字段全部为 NULL，AI 题完成后更新）
-    new_profile = UserProfile(user_id=new_user.id)
+    # 按 team_goal 初始化对应类型的空白向量画像（向量字段全部为 NULL，AI 题完成后更新）
+    if user_data.team_goal == "雅思学习搭子":
+        new_profile = IELTSUserProfile(user_id=new_user.id)
+    else:
+        new_profile = UserProfile(user_id=new_user.id)
     db.add(new_profile)
 
     # 创建匹配会话

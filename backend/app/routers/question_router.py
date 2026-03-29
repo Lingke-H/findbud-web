@@ -11,10 +11,11 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.user import User, UserProfile
+from app.models.user import User, UserProfile, IELTSUserProfile as IELTSOrmProfile
 from app.models.session import MatchSession
 from app.services import ai_service
 from app.services.match_service import UserProfile as MatchProfile, find_top_matches
+from app.services.ielts_match_service import IELTSUserProfile as IELTSMatchProfile, find_top_matches_ielts
 from app.schemas.session import (
     QuestionsResponse,
     SessionQuestion,
@@ -28,8 +29,8 @@ from app.schemas.session import (
 router = APIRouter(prefix="/sessions", tags=["问答与匹配"])
 
 
-# ── 维度定义（key=UserProfile 字段名，name/description 用于 AI Prompt）────
-_DIMS: list[dict] = [
+# ── 数学建模大赛维度定义 ────
+_MATH_DIMS: list[dict] = [
     {"key": "skill_modeling",     "label": "建模", "name": "skill_modeling",     "description": "数学建模与方案设计能力，包括数学思维、建模经验"},
     {"key": "skill_coding",       "label": "编程", "name": "skill_coding",       "description": "编程实现与数据处理能力，包括 Python/MATLAB/代码调试"},
     {"key": "skill_writing",      "label": "写作", "name": "skill_writing",      "description": "论文写作与排版能力，包括文字表达、摘要写作"},
@@ -37,11 +38,9 @@ _DIMS: list[dict] = [
     {"key": "strength_ambition",  "label": "动力", "name": "strength_ambition",  "description": "参赛动力与获奖欲望，对比赛结果的重视程度"},
 ]
 
-# AI Prompt 用的维度子集（只含 name + description）
-_AI_DIMS: list[dict] = [{"name": d["name"], "description": d["description"]} for d in _DIMS]
+_MATH_AI_DIMS: list[dict] = [{"name": d["name"], "description": d["description"]} for d in _MATH_DIMS]
 
-# MVP 固定选择题（与前端 mock 保持一致，可替换为 AI 动态生成）
-_MVP_QUESTIONS: list[SessionQuestion] = [
+_MATH_MVP_QUESTIONS: list[SessionQuestion] = [
     SessionQuestion(
         id="q_skill_model",
         dimension="skill_modeling",
@@ -99,11 +98,9 @@ _MVP_QUESTIONS: list[SessionQuestion] = [
     ),
 ]
 
-# 选项 ID → 维度分数（0–10）
-_OPTION_SCORES: dict[str, float] = {"A": 9.0, "B": 7.0, "C": 5.0, "D": 3.0}
+_MATH_OPTION_SCORES: dict[str, float] = {"A": 9.0, "B": 7.0, "C": 5.0, "D": 3.0}
 
-# Hackathon 保命 Mock 候选人（DB 用户不足 3 人时自动补充）
-_MOCK_CANDIDATES: list[dict] = [
+_MATH_MOCK_CANDIDATES: list[dict] = [
     {
         "user_id": "mock-001",
         "name": "张明远",
@@ -136,8 +133,136 @@ _MOCK_CANDIDATES: list[dict] = [
     },
 ]
 
-# question_id → dimension 快速查找
-_Q_DIM_MAP: dict[str, str] = {q.id: q.dimension for q in _MVP_QUESTIONS}
+_MATH_Q_DIM_MAP: dict[str, str] = {q.id: q.dimension for q in _MATH_MVP_QUESTIONS}
+
+
+# ═══════════════ 雅思学习搭子：维度 / 题目 / Mock ═══════════════
+
+_IELTS_DIMS: list[dict] = [
+    {"key": "skill_listening",       "label": "听力", "name": "skill_listening",       "description": "雅思听力模块的理解与应试能力"},
+    {"key": "skill_reading",         "label": "阅读", "name": "skill_reading",         "description": "雅思阅读模块的速读与精读能力"},
+    {"key": "skill_writing",         "label": "写作", "name": "skill_writing",         "description": "雅思写作模块的表达与论述能力"},
+    {"key": "skill_speaking",        "label": "口语", "name": "skill_speaking",        "description": "雅思口语模块的流利度与准确度"},
+    {"key": "strength_target_score", "label": "目标", "name": "strength_target_score", "description": "目标雅思成绩期望与备考动力"},
+]
+_IELTS_AI_DIMS: list[dict] = [{"name": d["name"], "description": d["description"]} for d in _IELTS_DIMS]
+
+_IELTS_OPTION_SCORES: dict[str, float] = {"A": 9.0, "B": 7.0, "C": 5.0, "D": 3.0}
+
+_IELTS_MVP_QUESTIONS: list[SessionQuestion] = [
+    SessionQuestion(
+        id="q_ielts_skill",
+        dimension="skill_listening",
+        text="在雅思四项技能中，你目前最擅长哪一项？",
+        options=[
+            SessionQuestionOption(option_id="A", text="听力（Listening）"),
+            SessionQuestionOption(option_id="B", text="阅读（Reading）"),
+            SessionQuestionOption(option_id="C", text="写作（Writing）"),
+            SessionQuestionOption(option_id="D", text="口语（Speaking）"),
+        ],
+    ),
+    SessionQuestion(
+        id="q_ielts_personality",
+        dimension="personality_planner",
+        text="在学习小组中，你通常扮演什么角色？",
+        options=[
+            SessionQuestionOption(option_id="A", text="计划者：制定学习计划并推动大家执行"),
+            SessionQuestionOption(option_id="B", text="资源者：广泛搜集学习资料和方法分享给组员"),
+            SessionQuestionOption(option_id="C", text="协调者：协调组员关系，保持团队氛围融洽"),
+            SessionQuestionOption(option_id="D", text="执行者：按计划踏实完成自己的学习任务"),
+        ],
+    ),
+    SessionQuestion(
+        id="q_ielts_fluency",
+        dimension="strength_fluency",
+        text="你在日常生活中用英语交流的顺畅程度如何？",
+        options=[
+            SessionQuestionOption(option_id="A", text="非常流利，能够自如地表达复杂观点"),
+            SessionQuestionOption(option_id="B", text="比较流利，偶尔需要组织语言"),
+            SessionQuestionOption(option_id="C", text="基本能交流，但词汇和语法有明显局限"),
+            SessionQuestionOption(option_id="D", text="比较困难，需要大量时间思考才能开口"),
+        ],
+    ),
+    SessionQuestion(
+        id="q_ielts_commitment",
+        dimension="strength_weekly_hours",
+        text="你每周能投入多少时间与搭子共同学习雅思？",
+        options=[
+            SessionQuestionOption(option_id="A", text="15 小时以上（高强度冲刺备考）"),
+            SessionQuestionOption(option_id="B", text="8~14 小时（稳定推进型）"),
+            SessionQuestionOption(option_id="C", text="3~7 小时（利用碎片时间）"),
+            SessionQuestionOption(option_id="D", text="1~2 小时（以交流为主）"),
+        ],
+    ),
+    SessionQuestion(
+        id="q_ielts_target",
+        dimension="strength_target_score",
+        text="你备考雅思的目标分数是？",
+        options=[
+            SessionQuestionOption(option_id="A", text="7.5 分及以上（高分目标）"),
+            SessionQuestionOption(option_id="B", text="7.0 分（主流院校要求）"),
+            SessionQuestionOption(option_id="C", text="6.5 分（达标优先）"),
+            SessionQuestionOption(option_id="D", text="6.0 或以下（初次尝试）"),
+        ],
+    ),
+]
+
+_IELTS_SKILL_OPTION_FIELDS: dict[str, dict] = {
+    "A": {"skill_listening": 9.0, "skill_reading": 3.0, "skill_writing": 3.0, "skill_speaking": 3.0},
+    "B": {"skill_listening": 3.0, "skill_reading": 9.0, "skill_writing": 3.0, "skill_speaking": 3.0},
+    "C": {"skill_listening": 3.0, "skill_reading": 3.0, "skill_writing": 9.0, "skill_speaking": 3.0},
+    "D": {"skill_listening": 3.0, "skill_reading": 3.0, "skill_writing": 3.0, "skill_speaking": 9.0},
+}
+_IELTS_PERSONALITY_OPTION_FIELDS: dict[str, dict] = {
+    "A": {"personality_planner": 9.0, "personality_resourcer": 3.0, "personality_coordinator": 3.0},
+    "B": {"personality_planner": 3.0, "personality_resourcer": 9.0, "personality_coordinator": 3.0},
+    "C": {"personality_planner": 3.0, "personality_resourcer": 3.0, "personality_coordinator": 9.0},
+    "D": {"personality_planner": 5.0, "personality_resourcer": 5.0, "personality_coordinator": 5.0},
+}
+_IELTS_COMMITMENT_OPTION_HOURS: dict[str, int] = {"A": 18, "B": 10, "C": 5, "D": 1}
+
+_IELTS_Q_DIM_MAP: dict[str, str] = {q.id: q.dimension for q in _IELTS_MVP_QUESTIONS}
+
+_IELTS_MOCK_CANDIDATES: list[dict] = [
+    {
+        "user_id": "ielts-mock-001", "name": "陈语桐", "grade": "大三", "major": "英语",
+        "contact_info": "WeChat: chenyutong_ielts",
+        "skill_listening": 9.0, "skill_reading": 6.0, "skill_writing": 5.0, "skill_speaking": 4.0,
+        "personality_planner": 8.0, "personality_resourcer": 4.0, "personality_coordinator": 5.0,
+        "strength_fluency": 8.0, "strength_has_ielts_exp": True, "strength_willing_training": True,
+        "strength_weekly_hours": 12, "strength_target_score": 8.0,
+    },
+    {
+        "user_id": "ielts-mock-002", "name": "刘一鸣", "grade": "大二", "major": "国际贸易",
+        "contact_info": "WeChat: liuym_study",
+        "skill_listening": 4.0, "skill_reading": 8.0, "skill_writing": 7.0, "skill_speaking": 4.0,
+        "personality_planner": 4.0, "personality_resourcer": 9.0, "personality_coordinator": 5.0,
+        "strength_fluency": 6.0, "strength_has_ielts_exp": False, "strength_willing_training": True,
+        "strength_weekly_hours": 8, "strength_target_score": 7.0,
+    },
+    {
+        "user_id": "ielts-mock-003", "name": "吴晓岚", "grade": "大四", "major": "教育学",
+        "contact_info": "email: wuxiaolan@example.com",
+        "skill_listening": 5.0, "skill_reading": 5.0, "skill_writing": 4.0, "skill_speaking": 9.0,
+        "personality_planner": 4.0, "personality_resourcer": 4.0, "personality_coordinator": 9.0,
+        "strength_fluency": 9.0, "strength_has_ielts_exp": True, "strength_willing_training": False,
+        "strength_weekly_hours": 6, "strength_target_score": 7.5,
+    },
+]
+
+
+# ═══════════════ 工具函数 ═══════════════
+
+def _get_team_goal(session_id: uuid.UUID, db: Session) -> str:
+    """通过 session_id 反查当前用户的 team_goal，默认返回 '数学建模大赛'。"""
+    try:
+        session = db.query(MatchSession).filter(MatchSession.id == session_id).first()
+        if not session:
+            return "数学建模大赛"
+        user = db.query(User).filter(User.id == session.user_id).first()
+        return user.team_goal if user and user.team_goal else "数学建模大赛"
+    except Exception:
+        return "数学建模大赛"
 
 
 # ── 路由 ─────────────────────────────────────────────────────
@@ -150,18 +275,30 @@ _Q_DIM_MAP: dict[str, str] = {q.id: q.dimension for q in _MVP_QUESTIONS}
 )
 async def get_questions(session_id: uuid.UUID, db: Session = Depends(get_db)):
     """优先调用 AI 生成差异化题目，失败时回退到 MVP 本地题目。"""
+    team_goal = _get_team_goal(session_id, db)
+    if team_goal == "雅思学习搭子":
+        ai_dims = _IELTS_AI_DIMS[:3]
+        comp_type = "雅思"
+        fallback_questions = _IELTS_MVP_QUESTIONS
+        dims = _IELTS_DIMS
+    else:
+        ai_dims = _MATH_AI_DIMS[:3]
+        comp_type = "数学建模"
+        fallback_questions = _MATH_MVP_QUESTIONS
+        dims = _MATH_DIMS
+
     try:
         raw_questions = await asyncio.wait_for(
             ai_service.generate_batch_questions(
-                competition_type="数学建模",
-                dimensions=_AI_DIMS[:3],  # 只生成 3 题，减少 token 消耗加快响应
+                competition_type=comp_type,
+                dimensions=ai_dims,
             ),
-            timeout=40.0,  # DeepSeek 可能较慢，给同 40s
+            timeout=40.0,
         )
         questions = [
             SessionQuestion(
                 id=q.get("id", f"q_{i+1}"),
-                dimension=q.get("dimension", _DIMS[i % len(_DIMS)]["key"]),
+                dimension=q.get("dimension", dims[i % len(dims)]["key"]),
                 text=q.get("text", ""),
                 options=[
                     SessionQuestionOption(
@@ -176,14 +313,11 @@ async def get_questions(session_id: uuid.UUID, db: Session = Depends(get_db)):
         if questions:
             return QuestionsResponse(session_id=str(session_id), questions=questions)
     except asyncio.TimeoutError:
-        print("[AI] generate_batch_questions timed out (20s), using MVP fallback")
+        print(f"[AI] generate_batch_questions timed out, using MVP fallback ({team_goal})")
     except Exception as e:
         print(f"[AI] generate_batch_questions failed, using MVP fallback: {e}")
 
-    return QuestionsResponse(
-        session_id=str(session_id),
-        questions=_MVP_QUESTIONS,
-    )
+    return QuestionsResponse(session_id=str(session_id), questions=fallback_questions)
 
 
 @router.post(
@@ -196,21 +330,22 @@ def submit_answers(
     body: SubmitRequest,
     db: Session = Depends(get_db),
 ):
-    """
-    业务逻辑：
-    1. 将每道题的 option_id 映射为维度分数
-    2. 更新 user_profiles（若 user_id 有效）
-    3. 从 DB 查询其他用户画像，不足 3 人时补充 Mock 候选人
-    4. 运行匹配算法，生成雷达图数据
-    5. 返回 Top3 + session_id
-    """
+    """按 team_goal 分流至数学建模或雅思匹配服务。"""
+    team_goal = _get_team_goal(session_id, db)
+    if team_goal == "雅思学习搭子":
+        return _submit_ielts(session_id, body, db)
+    return _submit_math(session_id, body, db)
 
-    # ── 1. 构建当前用户维度分数 ──
-    user_dim_scores: dict[str, float] = {d["key"]: 5.0 for d in _DIMS}
+
+# ─── 数学建模大赛匹配逻辑 ───
+
+def _submit_math(session_id: uuid.UUID, body: SubmitRequest, db: Session) -> SubmitResponse:
+    # ── 1. 构建维度分数 ──
+    user_dim_scores: dict[str, float] = {d["key"]: 5.0 for d in _MATH_DIMS}
     for ans in body.answers:
-        dim = _Q_DIM_MAP.get(ans.question_id)
-        if dim and ans.option_id in _OPTION_SCORES:
-            user_dim_scores[dim] = _OPTION_SCORES[ans.option_id]
+        dim = _MATH_Q_DIM_MAP.get(ans.question_id)
+        if dim and ans.option_id in _MATH_OPTION_SCORES:
+            user_dim_scores[dim] = _MATH_OPTION_SCORES[ans.option_id]
 
     # ── 2. 写入 UserProfile ──
     user_uuid: uuid.UUID | None = None
@@ -223,7 +358,7 @@ def submit_answers(
                     setattr(profile, field_name, score)
             db.commit()
     except Exception:
-        pass  # Mock user_id（非 UUID）时跳过 DB 写入
+        pass
 
     # ── 3. 更新 session 状态 ──
     session = db.query(MatchSession).filter(MatchSession.id == session_id).first()
@@ -234,18 +369,13 @@ def submit_answers(
         except Exception:
             db.rollback()
 
-    # ── 4. 查询其他用户画像 ──
+    # ── 4. 查询候选人 ──
     db_candidate_profiles: list[MatchProfile] = []
     db_candidate_info: dict[str, dict] = {}
-
     try:
-        query = (
-            db.query(User, UserProfile)
-            .join(UserProfile, User.id == UserProfile.user_id)
-        )
+        query = db.query(User, UserProfile).join(UserProfile, User.id == UserProfile.user_id)
         if user_uuid:
             query = query.filter(User.id != user_uuid)
-
         for user, profile in query.all():
             uid = str(user.id)
             db_candidate_profiles.append(MatchProfile(
@@ -268,11 +398,10 @@ def submit_answers(
     except Exception:
         pass
 
-    # ── 5. 补充 Mock 候选人（不足 3 个时） ──
+    # ── 5. 补充 Mock 候选人 ──
     all_profiles = list(db_candidate_profiles)
     all_info = dict(db_candidate_info)
-
-    for mock in _MOCK_CANDIDATES:
+    for mock in _MATH_MOCK_CANDIDATES:
         if len(all_profiles) >= 3:
             break
         all_profiles.append(MatchProfile(
@@ -307,13 +436,11 @@ def submit_answers(
     )
     match_output = find_top_matches(user_a=current_profile, candidates=all_profiles)
 
-    # ── 7. 组装响应（含雷达图） ──
-    dim_labels = {d["key"]: d["label"] for d in _DIMS}
+    # ── 7. 组装响应（含雷达图）──
+    dim_labels = {d["key"]: d["label"] for d in _MATH_DIMS}
     result_candidates: list[CandidateResult] = []
-
     for match in match_output.results:
         info = all_info.get(match.recommended_user_id, {})
-        # 从候选人 MatchProfile 取维度分数用于雷达图
         cand_prof = next((p for p in all_profiles if p.user_id == match.recommended_user_id), None)
         cand_dim = {
             "skill_modeling":     cand_prof.skill_modeling     if cand_prof else 5.0,
@@ -330,8 +457,6 @@ def submit_answers(
             )
             for dim_key in user_dim_scores
         ]
-        summary = match.match_reasons.get("summary", "综合匹配度较高")
-
         result_candidates.append(CandidateResult(
             user_id=match.recommended_user_id,
             name=info.get("name", "候选人"),
@@ -339,7 +464,186 @@ def submit_answers(
             major=info.get("major", "-"),
             match_score=int(round(match.match_score * 100)),
             contact_info=info.get("contact_info", "请通过平台联系"),
-            summary=summary,
+            summary=match.match_reasons.get("summary", "综合匹配度较高"),
+            radar=radar,
+        ))
+
+    # ── 8. 标记 session 完成 ──
+    if session:
+        session.status = "completed"
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
+    return SubmitResponse(session_id=str(session_id), top3=result_candidates)
+
+
+# ─── 雅思学习搭子匹配逻辑 ───
+
+def _submit_ielts(session_id: uuid.UUID, body: SubmitRequest, db: Session) -> SubmitResponse:
+    # ── 1. 构建雅思维度分数 ──
+    ielts_scores: dict = {
+        "skill_listening": 5.0, "skill_reading": 5.0,
+        "skill_writing": 5.0, "skill_speaking": 5.0,
+        "personality_planner": 5.0, "personality_resourcer": 5.0, "personality_coordinator": 5.0,
+        "strength_fluency": 5.0, "strength_has_ielts_exp": False,
+        "strength_willing_training": True, "strength_weekly_hours": 5,
+        "strength_target_score": 5.0,
+    }
+    for ans in body.answers:
+        opt = ans.option_id
+        if ans.question_id == "q_ielts_skill":
+            ielts_scores.update(_IELTS_SKILL_OPTION_FIELDS.get(opt, {}))
+        elif ans.question_id == "q_ielts_personality":
+            ielts_scores.update(_IELTS_PERSONALITY_OPTION_FIELDS.get(opt, {}))
+        elif ans.question_id == "q_ielts_fluency":
+            ielts_scores["strength_fluency"] = _IELTS_OPTION_SCORES.get(opt, 5.0)
+            ielts_scores["strength_has_ielts_exp"] = _IELTS_OPTION_SCORES.get(opt, 5.0) >= 7.0
+        elif ans.question_id == "q_ielts_commitment":
+            ielts_scores["strength_weekly_hours"] = _IELTS_COMMITMENT_OPTION_HOURS.get(opt, 5)
+            ielts_scores["strength_willing_training"] = opt in ("A", "B")
+        elif ans.question_id == "q_ielts_target":
+            ielts_scores["strength_target_score"] = _IELTS_OPTION_SCORES.get(opt, 5.0)
+
+    user_dim_scores: dict[str, float] = {
+        "skill_listening":       ielts_scores["skill_listening"],
+        "skill_reading":         ielts_scores["skill_reading"],
+        "skill_writing":         ielts_scores["skill_writing"],
+        "skill_speaking":        ielts_scores["skill_speaking"],
+        "strength_target_score": ielts_scores["strength_target_score"],
+    }
+
+    # ── 2. 写入 IELTSUserProfile ──
+    user_uuid: uuid.UUID | None = None
+    try:
+        user_uuid = uuid.UUID(body.user_id)
+        profile = db.query(IELTSOrmProfile).filter(IELTSOrmProfile.user_id == user_uuid).first()
+        if profile:
+            for field_name, val in ielts_scores.items():
+                if hasattr(profile, field_name):
+                    setattr(profile, field_name, val)
+            db.commit()
+    except Exception:
+        pass
+
+    # ── 3. 更新 session 状态 ──
+    session = db.query(MatchSession).filter(MatchSession.id == session_id).first()
+    if session:
+        session.status = "matching"
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
+
+    # ── 4. 查询雅思候选人 ──
+    db_candidate_profiles: list[IELTSMatchProfile] = []
+    db_candidate_info: dict[str, dict] = {}
+    try:
+        query = (
+            db.query(User, IELTSOrmProfile)
+            .join(IELTSOrmProfile, User.id == IELTSOrmProfile.user_id)
+        )
+        if user_uuid:
+            query = query.filter(User.id != user_uuid)
+        for user, profile in query.all():
+            uid = str(user.id)
+            db_candidate_profiles.append(IELTSMatchProfile(
+                user_id=uid,
+                skill_listening=float(profile.skill_listening or 5.0),
+                skill_reading=float(profile.skill_reading or 5.0),
+                skill_writing=float(profile.skill_writing or 5.0),
+                skill_speaking=float(profile.skill_speaking or 5.0),
+                personality_planner=float(profile.personality_planner or 5.0),
+                personality_resourcer=float(profile.personality_resourcer or 5.0),
+                personality_coordinator=float(profile.personality_coordinator or 5.0),
+                strength_fluency=float(profile.strength_fluency or 5.0),
+                strength_has_ielts_exp=bool(profile.strength_has_ielts_exp),
+                strength_willing_training=bool(profile.strength_willing_training),
+                strength_weekly_hours=int(profile.strength_weekly_hours or 0),
+                strength_target_score=float(profile.strength_target_score or 5.0),
+            ))
+            db_candidate_info[uid] = {
+                "name": user.name, "grade": user.grade,
+                "major": user.major,
+                "contact_info": user.contact_info or "请通过平台联系",
+            }
+    except Exception:
+        pass
+
+    # ── 5. 补充 Mock 候选人 ──
+    all_profiles = list(db_candidate_profiles)
+    all_info = dict(db_candidate_info)
+    for mock in _IELTS_MOCK_CANDIDATES:
+        if len(all_profiles) >= 3:
+            break
+        all_profiles.append(IELTSMatchProfile(
+            user_id=mock["user_id"],
+            skill_listening=mock["skill_listening"],
+            skill_reading=mock["skill_reading"],
+            skill_writing=mock["skill_writing"],
+            skill_speaking=mock["skill_speaking"],
+            personality_planner=mock["personality_planner"],
+            personality_resourcer=mock["personality_resourcer"],
+            personality_coordinator=mock["personality_coordinator"],
+            strength_fluency=mock["strength_fluency"],
+            strength_has_ielts_exp=mock["strength_has_ielts_exp"],
+            strength_willing_training=mock["strength_willing_training"],
+            strength_weekly_hours=mock["strength_weekly_hours"],
+            strength_target_score=mock["strength_target_score"],
+        ))
+        all_info[mock["user_id"]] = {
+            "name": mock["name"], "grade": mock["grade"],
+            "major": mock["major"], "contact_info": mock["contact_info"],
+        }
+
+    # ── 6. 运行雅思匹配算法 ──
+    current_profile = IELTSMatchProfile(
+        user_id=body.user_id,
+        skill_listening=ielts_scores["skill_listening"],
+        skill_reading=ielts_scores["skill_reading"],
+        skill_writing=ielts_scores["skill_writing"],
+        skill_speaking=ielts_scores["skill_speaking"],
+        personality_planner=ielts_scores["personality_planner"],
+        personality_resourcer=ielts_scores["personality_resourcer"],
+        personality_coordinator=ielts_scores["personality_coordinator"],
+        strength_fluency=ielts_scores["strength_fluency"],
+        strength_has_ielts_exp=ielts_scores["strength_has_ielts_exp"],
+        strength_willing_training=ielts_scores["strength_willing_training"],
+        strength_weekly_hours=ielts_scores["strength_weekly_hours"],
+        strength_target_score=ielts_scores["strength_target_score"],
+    )
+    match_output = find_top_matches_ielts(user_a=current_profile, candidates=all_profiles)
+
+    # ── 7. 组装响应（含雷达图）──
+    dim_labels = {d["key"]: d["label"] for d in _IELTS_DIMS}
+    result_candidates: list[CandidateResult] = []
+    for match in match_output.results:
+        info = all_info.get(match.recommended_user_id, {})
+        cand_prof = next((p for p in all_profiles if p.user_id == match.recommended_user_id), None)
+        cand_dim = {
+            "skill_listening":       cand_prof.skill_listening       if cand_prof else 5.0,
+            "skill_reading":         cand_prof.skill_reading         if cand_prof else 5.0,
+            "skill_writing":         cand_prof.skill_writing         if cand_prof else 5.0,
+            "skill_speaking":        cand_prof.skill_speaking        if cand_prof else 5.0,
+            "strength_target_score": cand_prof.strength_target_score if cand_prof else 5.0,
+        }
+        radar = [
+            RadarDim(
+                dimension=dim_labels.get(dim_key, dim_key),
+                user=int(round(user_dim_scores.get(dim_key, 5.0))),
+                candidate=int(round(cand_dim.get(dim_key, 5.0))),
+            )
+            for dim_key in user_dim_scores
+        ]
+        result_candidates.append(CandidateResult(
+            user_id=match.recommended_user_id,
+            name=info.get("name", "候选人"),
+            grade=info.get("grade", "-"),
+            major=info.get("major", "-"),
+            match_score=int(round(match.match_score * 100)),
+            contact_info=info.get("contact_info", "请通过平台联系"),
+            summary=match.match_reasons.get("summary", "综合匹配度较高"),
             radar=radar,
         ))
 
