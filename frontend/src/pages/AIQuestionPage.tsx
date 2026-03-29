@@ -226,6 +226,9 @@ const shimmerCSS = `
 function Skeleton() {
   return (
     <div style={{ padding: '16px 16px 0' }}>
+      <div style={{ textAlign: 'center', padding: '12px 0 18px', color: '#6366f1', fontSize: 13 }}>
+        ✨ AI 正在为你定制专属题目，请稍候…
+      </div>
       <div style={c.skelCard}>
         <div style={c.skelLine('40%', 14)} />
         <div style={c.skelLine('85%', 20)} />
@@ -257,7 +260,7 @@ export default function AIQuestionPage() {
   const load = async () => {
     setLoadState('loading')
     try {
-      const data = await fetchAIQuestions(userId)
+      const data = await fetchAIQuestions(userId, sessionId || undefined)
       setQuestions(data)
       setLoadState('success')
     } catch {
@@ -294,9 +297,9 @@ export default function AIQuestionPage() {
           option_id,
         }))
         const res = await submitAIAnswers({ user_id: userId, session_id: sessionId, answers: answersArr })
-        navigate('/result', { state: { user_id: userId, session_id: res.session_id } })
+        navigate('/result', { state: { user_id: userId, session_id: res.session_id, top3: res.top3 } })
       } catch {
-        navigate('/result', { state: { user_id: userId, session_id: sessionId } })
+        navigate('/result', { state: { user_id: userId, session_id: sessionId, top3: [] } })
       } finally {
         setSubmitting(false)
       }

@@ -1,9 +1,14 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import Select from 'react-select';
 import { submitBaseInfo, type UserBaseInfoPayload } from '../api/user'
+import { UNNC_MAJORS } from '../constants/majors';
+
+const MAJOR_OPTIONS = UNNC_MAJORS.map(m => ({ value: m, label: m }));
+
 
 // ─── 选项常量 ───────────────────────────────────────────────
-const GENDER_OPTIONS = ['男', '女', '非二元性别', '不愿透露']
+const GENDER_OPTIONS = ['男', '女']
 const GRADE_OPTIONS = ['大一', '大二', '大三', '大四', '研究生']
 const COMPETITION_OPTIONS = [
   { value: '数学建模', label: '📐 数学建模', available: true },
@@ -208,14 +213,17 @@ export default function OnboardingPage() {
     setLoading(true)
     setError('')
     let userId: string = crypto.randomUUID()  // 本地兜底 ID，后端就绪时替换
+    let sessionId: string = ''
     try {
       const res = await submitBaseInfo(form)
       userId = res.user_id
+      sessionId = res.session_id
     } catch {
       // 后端不可用时使用本地 UUID，保证流程不中断
     }
     localStorage.setItem('user_id', userId)
-    navigate('/question', { state: { user_id: userId } })
+    localStorage.setItem('session_id', sessionId)
+    navigate('/question', { state: { user_id: userId, session_id: sessionId } })
     setLoading(false)
   }
 
@@ -249,13 +257,36 @@ export default function OnboardingPage() {
           <label htmlFor="input-major" style={s.label}>
             专业 <span style={s.required}>*</span>
           </label>
-          <input
+          <Select
             id="input-major"
-            style={s.input}
-            type="text"
-            placeholder="数学与应用数学 / Mathematics and Applied Mathematics"
-            value={form.major ?? ''}
-            onChange={e => set('major', e.target.value)}
+            options={MAJOR_OPTIONS}
+            value={MAJOR_OPTIONS.find(o => o.value === form.major) || null}
+            onChange={option => set('major', option?.value || '')}
+            placeholder="搜索或选择你的专业..."
+            isClearable
+            styles={{
+              control: (base, state) => ({
+                ...base,
+                minHeight: 48,
+                border: state.isFocused ? '1.5px solid #6366f1' : '1.5px solid #e5e7eb',
+                borderRadius: 10,
+                background: '#fafafa',
+                boxShadow: state.isFocused ? '0 0 0 2px rgba(99,102,241,0.2)' : 'none',
+                transition: 'all 0.1s',
+                ':hover': {
+                  borderColor: '#c7d2fe'
+                }
+              }),
+              placeholder: (base) => ({ ...base, color: '#9ca3af' }),
+              option: (base, state) => ({
+                ...base,
+                background: state.isSelected ? '#6366f1' : state.isFocused ? '#eef2ff' : '#fff',
+                color: state.isSelected ? '#fff' : '#111827',
+                ':active': {
+                  background: '#eef2ff'
+                }
+              })
+            }}
           />
         </div>
 

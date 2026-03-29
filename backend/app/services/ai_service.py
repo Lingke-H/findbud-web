@@ -12,7 +12,10 @@ AI 动态提问服务模块
 import os
 import json
 import uuid
+import time
 from typing import Any
+
+import openai
 
 # ========== 数据结构定义 ==========
 
@@ -63,6 +66,9 @@ class AnswerScoreResult:
 # 每次会话 AI 提问的轮次范围
 MIN_QUESTION_ROUNDS: int = 3
 MAX_QUESTION_ROUNDS: int = 5
+
+_DEFAULT_API_BASE_URL: str = "https://api.openai.com/v1"
+_ERR_NO_API_KEY: str = "AI_API_KEY 未配置，请检查 .env 文件"
 
 
 # ========== Prompt 模板构建 ==========
@@ -176,11 +182,11 @@ async def generate_next_question(
     """
     # 从环境变量读取 AI API 配置，禁止硬编码
     api_key: str = os.getenv("AI_API_KEY", "")
-    api_base_url: str = os.getenv("AI_API_BASE_URL", "https://api.openai.com/v1")
+    api_base_url: str = os.getenv("AI_API_BASE_URL", _DEFAULT_API_BASE_URL)
     model_name: str = os.getenv("AI_MODEL_NAME", "gpt-4o")
 
     if not api_key:
-        raise RuntimeError("AI_API_KEY 未配置，请检查 .env 文件")
+        raise RuntimeError(_ERR_NO_API_KEY)
 
     # 构建系统提示词
     system_prompt: str = build_question_system_prompt(competition_type, dimensions)
@@ -191,23 +197,14 @@ async def generate_next_question(
         *conversation_history,
     ]
 
-    # TODO: 替换为实际 AI SDK 调用（如 openai.AsyncOpenAI 或 httpx 请求）
-    # 示例占位：
-    # client = openai.AsyncOpenAI(api_key=api_key, base_url=api_base_url)
-    # response = await client.chat.completions.create(
-    #     model=model_name,
-    #     messages=messages,
-    #     response_format={"type": "json_object"},
-    #     temperature=0.7,  # 适当随机性，确保不同用户获得不同问题
-    # )
-    # raw_content: str = response.choices[0].message.content
-
-    # --- 开发阶段占位返回，联调时删除此块 ---
-    raw_content: str = json.dumps({
-        "dimension": dimensions[current_round % len(dimensions)]["name"],
-        "question": f"【占位问题 第{current_round}轮】请描述你在{competition_type}中的相关经历。"
-    })
-    # ---
+    client = openai.AsyncOpenAI(api_key=api_key, base_url=api_base_url)
+    response = await client.chat.completions.create(
+        model=model_name,
+        messages=messages,
+        response_format={"type": "json_object"},
+        temperature=0.7,
+    )
+    raw_content: str = response.choices[0].message.content or "{}"
 
     # 解析 AI 返回的 JSON
     try:
@@ -251,32 +248,29 @@ async def score_user_answer(
     """
     # 从环境变量读取 AI API 配置
     api_key: str = os.getenv("AI_API_KEY", "")
+    api_base_url: str = os.getenv("AI_API_BASE_URL", _DEFAULT_API_BASE_URL)
     model_name: str = os.getenv("AI_MODEL_NAME", "gpt-4o")
 
     if not api_key:
-        raise RuntimeError("AI_API_KEY 未配置，请检查 .env 文件")
+        raise RuntimeError(_ERR_NO_API_KEY)
 
     # 构建评分提示词
     score_prompt: str = build_score_prompt(dimension_name, question_text, answer_text)
 
-    # TODO: 替换为实际 AI SDK 调用
-    # response = await client.chat.completions.create(
-    #     model=model_name,
-    #     messages=[{"role": "user", "content": score_prompt}],
-    #     response_format={"type": "json_object"},
-    #     temperature=0.2,  # 评分任务使用低随机性，保持一致性
-    # )
-    # raw_content: str = response.choices[0].message.content
-
-    # --- 开发阶段占位返回 ---
-    raw_content: str = json.dumps({"score": 7.5, "reasoning": "占位评分理由"})
-    # ---
+    client = openai.AsyncOpenAI(api_key=api_key, base_url=api_base_url)
+    response = await client.chat.completions.create(
+        model=model_name,
+        messages=[{"role": "user", "content": score_prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.2,
+    )
+    raw_content: str = response.choices[0].message.content or "{}"
 
     try:
         parsed: dict = json.loads(raw_content)
         ai_score: float = float(parsed["score"])
         reasoning: str = parsed["reasoning"]
-    except (json.JSONDecodeError, KeyError, ValueError) as e:
+    except (KeyError, ValueError) as e:
         raise ValueError(f"AI 评分结果解析失败：{e}")
 
     # 确保分数在合法范围内
@@ -287,3 +281,72 @@ async def score_user_answer(
         ai_score=ai_score,
         ai_score_reasoning=reasoning,
     )
+
+
+async def generate_batch_questions(
+    competition_type: str,
+    dimensions: list[dict[str, Any]],
+) -> list[dict]:
+    """
+    一次性调用 AI 生成全部选择题（批量生成模式）。
+
+    与 generate_next_question 不同，本函数一次性返回所有题目，
+    适用于前端需要预加载全部题目的场景。
+
+    参数:
+        competition_type (str): 比赛类型，如 "数学建模"
+        dimensions (list[dict]): 评判维度列表，每项含 name 和 description
+
+    返回:
+        list[dict]: 题目列表，每项格式为
+            {"id": str, "dimension": str, "text": str,
+             "options": [{"option_id": str, "text": str}, ...]}
+    """
+    api_key: str = os.getenv("AI_API_KEY", "")
+    api_base_url: str = os.getenv("AI_API_BASE_URL", _DEFAULT_API_BASE_URL)
+    model_name: str = os.getenv("AI_MODEL_NAME", "gpt-4o")
+
+    if not api_key:
+        raise RuntimeError(_ERR_NO_API_KEY)
+
+    dims_text = "\n".join(
+        [f"  {i+1}. {d['name']}：{d['description']}" for i, d in enumerate(dimensions)]
+    )
+    n = len(dimensions)
+
+    prompt = f"""为「{competition_type}」竞赛生成 {n} 道单选题，按维度顺序对应：
+{dims_text}
+
+规则（严格执行）：
+- 题目≤20字，选项≤12字，禁止出现维度名称
+- 选项A最强→D最弱
+
+只返回JSON，无多余文字：
+{{"questions":[{{"id":"q_1","dimension":"维度name","text":"题目","options":[{{"option_id":"A","text":"选项A"}},{{"option_id":"B","text":"选项B"}},{{"option_id":"C","text":"选项C"}},{{"option_id":"D","text":"选项D"}}]}}]}}
+各题替换上方模板，共 {n} 项。"""
+
+    print(f"[AI] >>> 开始调用 API  model={model_name}  base_url={api_base_url}  dims={n}")
+    t0 = time.time()
+
+    client = openai.AsyncOpenAI(api_key=api_key, base_url=api_base_url)
+    response = await client.chat.completions.create(
+        model=model_name,
+        messages=[{"role": "user", "content": prompt}],
+        response_format={"type": "json_object"},
+        temperature=0.85,
+        max_tokens=600,  # 硬上限：3题×~200token，防止过长生成
+    )
+    elapsed = round(time.time() - t0, 2)
+    raw: str = response.choices[0].message.content or "{}"
+    print(f"[AI] <<< API 响应完成  耗时={elapsed}s  tokens={response.usage.total_tokens if response.usage else '?'}")
+
+    try:
+        parsed: dict = json.loads(raw)
+        questions: list[dict] = parsed.get("questions", [])
+        if not questions:
+            raise ValueError("AI 返回的 questions 列表为空")
+        print(f"[AI] 成功解析 {len(questions)} 道题目")
+        return questions
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"[AI] 解析失败: {e}  raw[:200]={raw[:200]}")
+        raise ValueError(f"AI 批量生成题目解析失败：{e}，原始内容：{raw[:200]}")
