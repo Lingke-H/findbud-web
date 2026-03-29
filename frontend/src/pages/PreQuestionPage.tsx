@@ -230,7 +230,11 @@ export default function PreQuestionPage() {
   useEffect(() => { void load() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
   const current = questions[currentIndex]
-  const selectedOption = current ? (answers[current.question_id] ?? '') : ''
+  const selectedOption = current
+    ? (current.input_type === 'slider'
+      ? (answers[current.question_id] ?? String(current.slider_min ?? 0))
+      : (answers[current.question_id] ?? ''))
+    : ''
   const isLast = currentIndex === questions.length - 1
   const btnLabel = isLast ? '开始 AI 问答 →' : '下一题 →'
 
@@ -241,6 +245,7 @@ export default function PreQuestionPage() {
     try {
       await submitPreAnswer({
         user_id: userId,
+        session_id: sessionId || undefined,
         question_id: current.question_id,
         selected_option_id: selectedOption,
       })
@@ -302,25 +307,47 @@ export default function PreQuestionPage() {
           <div style={s.questionCard}>
             <div style={s.questionText}>{current.question_text}</div>
 
-            {current.options.map(opt => {
-              const selected = selectedOption === opt.option_id
-              return (
-                <button
-                  key={opt.option_id}
-                  style={s.optionBtn(selected)}
-                  onClick={() =>
+            {current.input_type === 'slider' ? (
+              <div>
+                <input
+                  type="range"
+                  min={current.slider_min ?? 0}
+                  max={current.slider_max ?? 5}
+                  step={current.slider_step ?? 1}
+                  value={Number(selectedOption)}
+                  onChange={e =>
                     setAnswers(prev => ({
                       ...prev,
-                      [current.question_id]: opt.option_id,
+                      [current.question_id]: e.target.value,
                     }))
                   }
-                >
-                  <span style={s.optionId(selected)}>{opt.option_id}</span>
-                  <span style={s.optionText(selected)}>{opt.text}</span>
-                  {selected && <span style={s.checkMark}>✓</span>}
-                </button>
-              )
-            })}
+                  style={{ width: '100%' }}
+                />
+                <div style={{ marginTop: 10, fontSize: 14, color: '#374151', textAlign: 'center' }}>
+                  当前选择：{selectedOption}
+                </div>
+              </div>
+            ) : (
+              (current.options ?? []).map(opt => {
+                const selected = selectedOption === opt.option_id
+                return (
+                  <button
+                    key={opt.option_id}
+                    style={s.optionBtn(selected)}
+                    onClick={() =>
+                      setAnswers(prev => ({
+                        ...prev,
+                        [current.question_id]: opt.option_id,
+                      }))
+                    }
+                  >
+                    <span style={s.optionId(selected)}>{opt.option_id}</span>
+                    <span style={s.optionText(selected)}>{opt.text}</span>
+                    {selected && <span style={s.checkMark}>✓</span>}
+                  </button>
+                )
+              })
+            )}
           </div>
         </div>
       )}

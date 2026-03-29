@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import {
   RadarChart,
   Radar,
@@ -20,7 +19,7 @@ export interface CandidateData {
   grade: string
   major: string
   match_score: number   // 0–100
-  contact_info: string  // 微信号 or 邮箱
+  contact_info: string  // 邮箱
   summary: string
   radar: RadarDim[]
 }
@@ -35,7 +34,6 @@ const AVATAR_COLORS = ['#6366f1', '#f97316', '#10b981']
 const AVATAR_LABEL = ['#1', '#2', '#3']
 
 export default function CandidateCard({ candidate, rank }: Props) {
-  const [revealed, setRevealed] = useState(false)
   const avatarColor = AVATAR_COLORS[rank] ?? '#6366f1'
 
   let scoreColor: string
@@ -106,10 +104,9 @@ export default function CandidateCard({ candidate, rank }: Props) {
 
       {/* CTA 按钮 */}
       <button
-        style={s.ctaBtn(revealed, avatarColor)}
-        onClick={() => setRevealed(true)}
+        style={s.ctaBtn(true, avatarColor)}
       >
-        {revealed ? `📱 ${candidate.contact_info}` : '获取联系方式 →'}
+        {`� ${candidate.contact_info}`}
       </button>
     </div>
   )

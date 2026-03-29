@@ -20,7 +20,13 @@ class UserCreate(BaseModel):
     want_long_term: bool = Field(..., description="是否想要长期组队")
     gender_preference: str | None = Field(None, max_length=10, description="对搭子的性别要求，如 '男'/'女'/'任意'")
     grade_preference: str | None = Field(None, max_length=20, description="对搭子的年级要求，如 '大二'/'任意'")
-    contact_info: str | None = Field(None, max_length=100, description="联系方式（微信/QQ），可选")
+    contact_info: str = Field(
+        ...,
+        min_length=5,
+        max_length=100,
+        pattern=r"^[^\s@]+@[^\s@]+\.[^\s@]+$",
+        description="联系方式邮箱（必填）",
+    )
 
 
 class UserResponse(BaseModel):

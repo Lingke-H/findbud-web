@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.user import User, UserProfile, IELTSUserProfile
 from app.models.session import MatchSession
+from app.routers.question_router import trigger_question_prewarm
 from app.schemas.user import UserCreate, UserResponse, SessionCreateResponse
 
 router = APIRouter(prefix="/users", tags=["用户"])
@@ -26,7 +27,7 @@ router = APIRouter(prefix="/users", tags=["用户"])
                 "创建 User 记录、空白 UserProfile 记录，以及初始 MatchSession。"
                 "返回 user_id 和 session_id，前端后续所有步骤都带上 session_id。",
 )
-def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
+async def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
     """
     业务逻辑：
     1. 写入 users 表
@@ -66,6 +67,9 @@ def create_user(user_data: UserCreate, db: Session = Depends(get_db)):
     db.add(new_session)
 
     db.commit()
+
+    # 预热 AI 出题：用户进入 AI 问题页前后台先生成题目，减少首屏等待
+    trigger_question_prewarm(str(new_session.id))
 
     return SessionCreateResponse(
         user_id=new_user.id,

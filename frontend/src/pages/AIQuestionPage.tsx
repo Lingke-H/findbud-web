@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import {
-  fetchAIQuestions,
+  fetchAIQuestionsState,
   submitAIAnswers,
   type AIQuestion,
 } from '../api/question'
@@ -58,18 +58,6 @@ const c = {
   } as React.CSSProperties,
 
   body: { padding: '16px 16px 0' } as React.CSSProperties,
-
-  // ── 维度标签 ──
-  dimensionTag: {
-    display: 'inline-block',
-    padding: '3px 10px',
-    borderRadius: 20,
-    background: 'rgba(99,102,241,0.12)',
-    color: '#4338ca',
-    fontSize: 12,
-    fontWeight: 600,
-    marginBottom: 12,
-  } as React.CSSProperties,
 
   // ── 题目卡片 ──
   qCard: {
@@ -248,31 +236,62 @@ export default function AIQuestionPage() {
   const navigate = useNavigate()
   const location = useLocation()
   const userId: string = location.state?.user_id ?? localStorage.getItem('user_id') ?? ''
-  const sessionId: string = location.state?.session_id ?? ''
+  const sessionId: string = location.state?.session_id ?? localStorage.getItem('session_id') ?? ''
 
   const [loadState, setLoadState] = useState<LoadState>('loading')
   const [questions, setQuestions] = useState<AIQuestion[]>([])
+  const [totalCount, setTotalCount] = useState(0)
+  const [isGenerating, setIsGenerating] = useState(false)
   const [currentIndex, setCurrentIndex] = useState(0)
   // answers: question_id -> option_id
   const [answers, setAnswers] = useState<Record<string, string>>({})
   const [submitting, setSubmitting] = useState(false)
+  const [waitingNext, setWaitingNext] = useState(false)
 
-  const load = async () => {
-    setLoadState('loading')
+  const refreshQuestions = async (minCount = 1, forceLoading = false) => {
+    if (forceLoading) setLoadState('loading')
     try {
-      const data = await fetchAIQuestions(userId, sessionId || undefined)
-      setQuestions(data)
-      setLoadState('success')
+      const data = await fetchAIQuestionsState(userId, sessionId || undefined, minCount)
+      setQuestions(data.questions)
+      setTotalCount(data.total_count)
+      setIsGenerating(data.is_generating)
+
+      if (data.questions.length > 0) {
+        setLoadState('success')
+        setWaitingNext(false)
+      } else if (data.is_generating) {
+        setLoadState('loading')
+      } else {
+        setLoadState('success')
+      }
     } catch {
       setLoadState('error')
     }
   }
 
-  useEffect(() => { void load() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void refreshQuestions(1, true) }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (loadState !== 'loading' || !sessionId) return
+    const timer = globalThis.setInterval(() => {
+      void refreshQuestions(1)
+    }, 1500)
+    return () => globalThis.clearInterval(timer)
+  }, [loadState, sessionId])
+
+  useEffect(() => {
+    if (loadState !== 'success' || !isGenerating || !sessionId) return
+    const desiredCount = Math.min(Math.max(currentIndex + 2, 1), totalCount || 1)
+    const timer = globalThis.setInterval(() => {
+      void refreshQuestions(desiredCount)
+    }, 2000)
+    return () => globalThis.clearInterval(timer)
+  }, [loadState, isGenerating, sessionId, currentIndex, totalCount])
 
   const current = questions[currentIndex]
   const total = questions.length
-  const progressPct = total > 0 ? ((currentIndex + 1) / total) * 100 : 0
+  const progressBase = totalCount > 0 ? totalCount : total
+  const progressPct = progressBase > 0 ? ((currentIndex + 1) / progressBase) * 100 : 0
   const selectedOption = current ? (answers[current.id] ?? '') : ''
   const isFirst = currentIndex === 0
   const isLast = currentIndex === total - 1
@@ -289,6 +308,21 @@ export default function AIQuestionPage() {
 
   async function goNext() {
     if (submitting || !selectedOption) return
+
+    if (isLast && (isGenerating || total < totalCount)) {
+      setWaitingNext(true)
+      const nextState = await fetchAIQuestionsState(userId, sessionId || undefined, total + 1)
+      setQuestions(nextState.questions)
+      setTotalCount(nextState.total_count)
+      setIsGenerating(nextState.is_generating)
+
+      if (nextState.questions.length > total) {
+        setCurrentIndex(i => i + 1)
+        setWaitingNext(false)
+      }
+      return
+    }
+
     if (isLast) {
       setSubmitting(true)
       try {
@@ -310,6 +344,8 @@ export default function AIQuestionPage() {
 
   const nextLabel = (() => {
     if (submitting) return '提交中…'
+    if (waitingNext) return '生成下一题中…'
+    if (isLast && (isGenerating || total < totalCount)) return '下一题（生成中）'
     if (isLast) return '提交，匹配队友 🎉'
     return '下一题 →'
   })()
@@ -344,7 +380,16 @@ export default function AIQuestionPage() {
         <div style={c.errBox}>
           <div style={{ fontSize: 36, marginBottom: 8 }}>😢</div>
           <p style={{ color: '#ef4444', fontSize: 15, marginBottom: 0 }}>题目加载失败，请重试</p>
-          <button style={c.retryBtn} onClick={() => void load()}>重新加载</button>
+          <button style={c.retryBtn} onClick={() => void refreshQuestions(1, true)}>重新加载</button>
+        </div>
+      )}
+
+      {/* AI 返回空题 */}
+      {loadState === 'success' && total === 0 && (
+        <div style={c.errBox}>
+          <div style={{ fontSize: 36, marginBottom: 8 }}>⚠️</div>
+          <p style={{ color: '#ef4444', fontSize: 15, marginBottom: 0 }}>AI 暂时不可用，未生成题目，请稍后重试</p>
+          <button style={c.retryBtn} onClick={() => void refreshQuestions(1, true)}>重新加载</button>
         </div>
       )}
 
@@ -352,7 +397,6 @@ export default function AIQuestionPage() {
       {loadState === 'success' && current && (
         <div style={c.body}>
           <div style={c.qCard}>
-            <span style={c.dimensionTag}>{current.dimension}</span>
             <div style={c.qText}>{current.text}</div>
 
             {current.options.map(opt => {
@@ -374,15 +418,15 @@ export default function AIQuestionPage() {
       )}
 
       {/* 底部导航 */}
-      {loadState === 'success' && (
+      {loadState === 'success' && total > 0 && (
         <div style={c.footer}>
           <button style={c.prevBtn(isFirst)} onClick={goPrev} disabled={isFirst}>
             ← 上一题
           </button>
           <button
-            style={c.nextBtn(!selectedOption || submitting, isLast)}
+            style={c.nextBtn(!selectedOption || submitting || waitingNext, isLast)}
             onClick={() => void goNext()}
-            disabled={!selectedOption || submitting}
+            disabled={!selectedOption || submitting || waitingNext}
           >
             {nextLabel}
           </button>

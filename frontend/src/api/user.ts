@@ -5,11 +5,11 @@ export interface UserBaseInfoPayload {
   gender: string
   grade: string
   major: string
+  contact_info: string
   competition_target: string
   want_long_term: boolean
   gender_preference?: string
   grade_preference?: string
-  contact_info?: string
 }
 
 export interface UserCreateResponse {

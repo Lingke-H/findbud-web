@@ -286,6 +286,7 @@ async def score_user_answer(
 async def generate_batch_questions(
     competition_type: str,
     dimensions: list[dict[str, Any]],
+    variation_hint: str = "",
 ) -> list[dict]:
     """
     一次性调用 AI 生成全部选择题（批量生成模式）。
@@ -310,20 +311,30 @@ async def generate_batch_questions(
         raise RuntimeError(_ERR_NO_API_KEY)
 
     dims_text = "\n".join(
-        [f"  {i+1}. {d['name']}：{d['description']}" for i, d in enumerate(dimensions)]
+        [f"  {i+1}. 出题意图：{d['description']}" for i, d in enumerate(dimensions)]
     )
     n = len(dimensions)
 
-    prompt = f"""为「{competition_type}」竞赛生成 {n} 道单选题，按维度顺序对应：
+    variation_line = f"\n本次出题变体标识：{variation_hint}（仅用于增加多样性，不要原样输出）" if variation_hint else ""
+
+    prompt = f"""生成{n}道数学建模单选题（按维度顺序）：
 {dims_text}
+{variation_line}
 
-规则（严格执行）：
-- 题目≤20字，选项≤12字，禁止出现维度名称
-- 选项A最强→D最弱
+要求：
+1) 每题4个选项A-D，A最强、D最弱
+2) 题干<=18字，选项<=10字
+3) 必须返回且仅返回{n}道题，不得少于或多于{n}道
+4) 题目必须委婉、场景化，避免“你是否擅长X”这类直接问法
+5) 题干和选项中禁止直接出现维度名、标签名、角色名（例如：建模/编程/写作/协作/动力、领导者/执行者/支持者、比赛经验/获奖欲望）
+6) 同一轮题目之间，场景、措辞、选项表达不得重复模板
+7) 每题四个选项必须体现不同思路或动作，禁止只改强弱程度词（如“很强/较强/一般/较弱”）
+8) 选项措辞要具体，优先使用可执行行为，不要用抽象空话
+9) 尽量避免与常见模板题面重复，优先使用不同场景、不同措辞
+10) 不要解释，只返回JSON
 
-只返回JSON，无多余文字：
-{{"questions":[{{"id":"q_1","dimension":"维度name","text":"题目","options":[{{"option_id":"A","text":"选项A"}},{{"option_id":"B","text":"选项B"}},{{"option_id":"C","text":"选项C"}},{{"option_id":"D","text":"选项D"}}]}}]}}
-各题替换上方模板，共 {n} 项。"""
+格式：
+{{"questions":[{{"id":"q_1","dimension":"skill_xxx","text":"...","options":[{{"option_id":"A","text":"..."}},{{"option_id":"B","text":"..."}},{{"option_id":"C","text":"..."}},{{"option_id":"D","text":"..."}}]}}]}}"""
 
     print(f"[AI] >>> 开始调用 API  model={model_name}  base_url={api_base_url}  dims={n}")
     t0 = time.time()
@@ -333,8 +344,11 @@ async def generate_batch_questions(
         model=model_name,
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
-        temperature=0.85,
-        max_tokens=600,  # 硬上限：3题×~200token，防止过长生成
+        temperature=0.9,
+        top_p=0.98,
+        presence_penalty=0.6,
+        frequency_penalty=0.6,
+        max_tokens=min(960, 160 * n + 120),
     )
     elapsed = round(time.time() - t0, 2)
     raw: str = response.choices[0].message.content or "{}"
@@ -343,6 +357,8 @@ async def generate_batch_questions(
     try:
         parsed: dict = json.loads(raw)
         questions: list[dict] = parsed.get("questions", [])
+        if len(questions) != n:
+            raise ValueError(f"AI 返回题量不正确：期望 {n}，实际 {len(questions)}")
         if not questions:
             raise ValueError("AI 返回的 questions 列表为空")
         print(f"[AI] 成功解析 {len(questions)} 道题目")

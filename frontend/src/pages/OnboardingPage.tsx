@@ -18,11 +18,14 @@ const COMPETITION_OPTIONS = [
 
 // ─── 必填字段校验 ────────────────────────────────────────────
 function isFormValid(f: Partial<UserBaseInfoPayload>): f is UserBaseInfoPayload {
+  const email = f.contact_info?.trim() ?? ''
+  const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
   return (
     !!f.name?.trim() &&
     !!f.gender &&
     !!f.grade &&
     !!f.major?.trim() &&
+    isEmailValid &&
     !!f.competition_target &&
     f.want_long_term !== undefined
   )
@@ -212,19 +215,22 @@ export default function OnboardingPage() {
     if (!valid || loading) return
     setLoading(true)
     setError('')
-    let userId: string = crypto.randomUUID()  // 本地兜底 ID，后端就绪时替换
-    let sessionId: string = ''
     try {
       const res = await submitBaseInfo(form)
-      userId = res.user_id
-      sessionId = res.session_id
+      if (!res.user_id || !res.session_id) {
+        setError('服务返回异常，请稍后重试')
+        return
+      }
+
+      localStorage.setItem('user_id', res.user_id)
+      localStorage.setItem('session_id', res.session_id)
+      navigate('/question', { state: { user_id: res.user_id, session_id: res.session_id } })
     } catch {
-      // 后端不可用时使用本地 UUID，保证流程不中断
+      setError('后端连接失败，请先启动后端服务后重试')
+      return
+    } finally {
+      setLoading(false)
     }
-    localStorage.setItem('user_id', userId)
-    localStorage.setItem('session_id', sessionId)
-    navigate('/question', { state: { user_id: userId, session_id: sessionId } })
-    setLoading(false)
   }
 
   return (
@@ -287,6 +293,21 @@ export default function OnboardingPage() {
                 }
               })
             }}
+          />
+        </div>
+
+        {/* 联系方式（邮箱） */}
+        <div style={s.card}>
+          <label htmlFor="input-contact" style={s.label}>
+            联系方式（邮箱） <span style={s.required}>*</span>
+          </label>
+          <input
+            id="input-contact"
+            style={s.input}
+            type="email"
+            placeholder="请输入邮箱，例如 abc@xx.com"
+            value={form.contact_info ?? ''}
+            onChange={e => set('contact_info', e.target.value.trim())}
           />
         </div>
 

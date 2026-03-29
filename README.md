@@ -249,7 +249,7 @@ cp frontend/.env.example frontend/.env
 `.env` 内容示例：
 
 ```dotenv
-VITE_API_BASE_URL=http://localhost:8000/api/v1
+VITE_API_BASE_URL=http://localhost:8000
 ```
 
 ### 6. 启动前端

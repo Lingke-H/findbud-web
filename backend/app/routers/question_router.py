@@ -6,8 +6,10 @@ POST /api/v1/sessions/{session_id}/submit     — 提交所有答案，触发匹
 """
 
 import asyncio
+import secrets
+import time
 import uuid
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -20,6 +22,7 @@ from app.schemas.session import (
     QuestionsResponse,
     SessionQuestion,
     SessionQuestionOption,
+    PreAnswerRequest,
     SubmitRequest,
     SubmitResponse,
     CandidateResult,
@@ -106,7 +109,7 @@ _MATH_MOCK_CANDIDATES: list[dict] = [
         "name": "张明远",
         "grade": "大三",
         "major": "数学与应用数学",
-        "contact_info": "WeChat: zhangy2024",
+        "contact_info": "zhangy2024@example.com",
         "skill_modeling": 9.0, "skill_coding": 5.0, "skill_writing": 7.0,
         "personality_leader": 7.0, "personality_executor": 6.0, "personality_supporter": 4.0,
         "strength_competition_count": 3, "strength_award_count": 1, "strength_ambition": 9.0,
@@ -116,7 +119,7 @@ _MATH_MOCK_CANDIDATES: list[dict] = [
         "name": "李子晴",
         "grade": "大二",
         "major": "计算机科学与技术",
-        "contact_info": "WeChat: lzq_coding",
+        "contact_info": "lzq_coding@example.com",
         "skill_modeling": 6.0, "skill_coding": 10.0, "skill_writing": 4.0,
         "personality_leader": 4.0, "personality_executor": 9.0, "personality_supporter": 5.0,
         "strength_competition_count": 2, "strength_award_count": 0, "strength_ambition": 7.0,
@@ -126,7 +129,7 @@ _MATH_MOCK_CANDIDATES: list[dict] = [
         "name": "王思远",
         "grade": "大四",
         "major": "统计学",
-        "contact_info": "email: wsy@example.com",
+        "contact_info": "wsy@example.com",
         "skill_modeling": 7.0, "skill_coding": 6.0, "skill_writing": 9.0,
         "personality_leader": 5.0, "personality_executor": 5.0, "personality_supporter": 9.0,
         "strength_competition_count": 5, "strength_award_count": 2, "strength_ambition": 7.0,
@@ -226,7 +229,7 @@ _IELTS_Q_DIM_MAP: dict[str, str] = {q.id: q.dimension for q in _IELTS_MVP_QUESTI
 _IELTS_MOCK_CANDIDATES: list[dict] = [
     {
         "user_id": "ielts-mock-001", "name": "陈语桐", "grade": "大三", "major": "英语",
-        "contact_info": "WeChat: chenyutong_ielts",
+        "contact_info": "chenyutong_ielts@example.com",
         "skill_listening": 9.0, "skill_reading": 6.0, "skill_writing": 5.0, "skill_speaking": 4.0,
         "personality_planner": 8.0, "personality_resourcer": 4.0, "personality_coordinator": 5.0,
         "strength_fluency": 8.0, "strength_has_ielts_exp": True, "strength_willing_training": True,
@@ -234,7 +237,7 @@ _IELTS_MOCK_CANDIDATES: list[dict] = [
     },
     {
         "user_id": "ielts-mock-002", "name": "刘一鸣", "grade": "大二", "major": "国际贸易",
-        "contact_info": "WeChat: liuym_study",
+        "contact_info": "liuym_study@example.com",
         "skill_listening": 4.0, "skill_reading": 8.0, "skill_writing": 7.0, "skill_speaking": 4.0,
         "personality_planner": 4.0, "personality_resourcer": 9.0, "personality_coordinator": 5.0,
         "strength_fluency": 6.0, "strength_has_ielts_exp": False, "strength_willing_training": True,
@@ -242,7 +245,7 @@ _IELTS_MOCK_CANDIDATES: list[dict] = [
     },
     {
         "user_id": "ielts-mock-003", "name": "吴晓岚", "grade": "大四", "major": "教育学",
-        "contact_info": "email: wuxiaolan@example.com",
+        "contact_info": "wuxiaolan@example.com",
         "skill_listening": 5.0, "skill_reading": 5.0, "skill_writing": 4.0, "skill_speaking": 9.0,
         "personality_planner": 4.0, "personality_resourcer": 4.0, "personality_coordinator": 9.0,
         "strength_fluency": 9.0, "strength_has_ielts_exp": True, "strength_willing_training": False,
@@ -264,6 +267,175 @@ def _get_team_goal(session_id: uuid.UUID, db: Session) -> str:
     except Exception:
         return "数学建模大赛"
 
+# 会话级题目缓存：同一 session 重复进入页面时直接复用，避免重复调用 AI
+_QUESTION_CACHE_TTL_SECONDS = 300
+_QUESTION_CACHE: dict[str, tuple[float, list[SessionQuestion]]] = {}
+_QUESTION_INFLIGHT: dict[str, asyncio.Task[None]] = {}
+_AI_QUESTION_COUNT = 10
+_SCENE_HINTS: tuple[str, ...] = (
+    "赛前分工会",
+    "中期卡点复盘",
+    "临近提交冲刺",
+    "结果异常排查",
+    "模型选择争论",
+    "数据清洗决策",
+    "答辩准备讨论",
+    "队内分工临时调整",
+    "核心成员临时请假",
+    "数据源突然失效",
+    "指标定义出现分歧",
+    "模型结果与常识冲突",
+    "参数调优陷入瓶颈",
+    "论文结构重写讨论",
+    "摘要反复修改",
+    "图表表达方案对比",
+    "代码性能突然下降",
+    "复现实验结果不一致",
+    "导师临时给出新要求",
+    "答辩老师连续追问",
+    "队友沟通节奏不一致",
+    "截止日前最后两小时",
+    "计划方案与实际偏离",
+    "备选方案切换决策",
+    "外部样例借鉴取舍",
+    "文献观点彼此矛盾",
+    "结果可解释性不足",
+    "任务优先级重新排序",
+    "跨专业队友协作磨合",
+    "深夜远程协同推进",
+    "版本回退与修复选择",
+    "提交前最终质量检查",
+)
+_OPTION_STYLE_HINTS: tuple[str, ...] = (
+    "四个选项用不同决策路径",
+    "四个选项分别偏计划/执行/沟通/复盘",
+    "四个选项体现不同风险偏好",
+    "四个选项体现不同时间管理策略",
+    "四个选项体现不同信息获取方式",
+)
+
+_GENDER_PREF_OPTION_MAP: dict[str, str | None] = {
+    "A": "女",
+    "B": "男",
+    "C": None,
+}
+
+_GRADE_PREF_OPTION_MAP: dict[str, str | None] = {
+    "A": "大一",
+    "B": "大二",
+    "C": "大三",
+    "D": "大四",
+    "E": None,
+}
+
+
+def _get_cached_questions(session_key: str) -> list[SessionQuestion]:
+    now = time.time()
+    cache_item = _QUESTION_CACHE.get(session_key)
+    if cache_item and now - cache_item[0] <= _QUESTION_CACHE_TTL_SECONDS:
+        return cache_item[1]
+    return []
+
+
+async def _generate_single_question(
+    session_key: str,
+    index: int,
+    competition_type: str,
+    ai_dims: list[dict],
+    base_dims: list[dict],
+) -> SessionQuestion:
+    dim_index = index % len(ai_dims)
+    scene_hint = secrets.choice(_SCENE_HINTS)
+    option_style_hint = secrets.choice(_OPTION_STYLE_HINTS)
+    variation_hint = f"{session_key[-8:]}-q{index+1}-{uuid.uuid4().hex[:6]}|{scene_hint}|{option_style_hint}"
+
+    raw_questions = await asyncio.wait_for(
+        ai_service.generate_batch_questions(
+            competition_type=competition_type,
+            dimensions=[ai_dims[dim_index]],
+            variation_hint=variation_hint,
+        ),
+        timeout=20.0,
+    )
+    first = raw_questions[0] if raw_questions else {}
+    return SessionQuestion(
+        id=f"q_{index+1}",
+        dimension=base_dims[dim_index]["key"],
+        text=first.get("text", ""),
+        options=[
+            SessionQuestionOption(
+                option_id=opt.get("option_id", "A"),
+                text=opt.get("text", ""),
+            )
+            for opt in first.get("options", [])
+        ],
+    )
+
+
+async def _run_generation_for_session(
+    session_key: str,
+    competition_type: str,
+    ai_dims: list[dict],
+    base_dims: list[dict],
+) -> None:
+    questions = list(_get_cached_questions(session_key))
+    start_index = len(questions)
+
+    for idx in range(start_index, _AI_QUESTION_COUNT):
+        try:
+            q = await _generate_single_question(session_key, idx, competition_type, ai_dims, base_dims)
+            questions.append(q)
+            _QUESTION_CACHE[session_key] = (time.time(), list(questions))
+            print(f"[AI] generated {len(questions)}/{_AI_QUESTION_COUNT} for session={session_key}")
+        except Exception as e:
+            print(f"[AI] single question generation failed at idx={idx}: {e}")
+            break
+
+
+def _start_generation_task(
+    session_key: str,
+    competition_type: str,
+    ai_dims: list[dict],
+    base_dims: list[dict],
+) -> asyncio.Task[None]:
+    task: asyncio.Task[None] = asyncio.create_task(
+        _run_generation_for_session(session_key, competition_type, ai_dims, base_dims)
+    )
+
+    def _cleanup(_done_task: asyncio.Task[None]) -> None:
+        _QUESTION_INFLIGHT.pop(session_key, None)
+
+    task.add_done_callback(_cleanup)
+    _QUESTION_INFLIGHT[session_key] = task
+    return task
+
+
+def trigger_question_prewarm(session_key: str) -> None:
+    cached_questions = _get_cached_questions(session_key)
+    if len(cached_questions) >= _AI_QUESTION_COUNT:
+        return
+    if session_key in _QUESTION_INFLIGHT:
+        return
+    _start_generation_task(session_key, "数学建模", _MATH_AI_DIMS, _MATH_DIMS)
+    print(f"[AI] prewarm started for session={session_key}")
+
+
+def _get_session_question_dim_map(session_key: str) -> dict[str, str]:
+    cached_questions = _get_cached_questions(session_key)
+    if cached_questions:
+        return {q.id: q.dimension for q in cached_questions}
+    return _MATH_Q_DIM_MAP
+
+
+def _apply_fixed_preferences(user: User, question_id: str, option_id: str) -> bool:
+    if question_id == "pre_gender_preference":
+        user.gender_preference = _GENDER_PREF_OPTION_MAP.get(option_id)
+        return True
+    if question_id == "pre_grade_preference":
+        user.grade_preference = _GRADE_PREF_OPTION_MAP.get(option_id)
+        return True
+    return False
+
 
 # ── 路由 ─────────────────────────────────────────────────────
 
@@ -273,51 +445,97 @@ def _get_team_goal(session_id: uuid.UUID, db: Session) -> str:
     summary="获取 AI 问题列表",
     description="调用 AI 动态生成选择题；AI 不可用时降级为 MVP 固定题目。",
 )
-async def get_questions(session_id: uuid.UUID, db: Session = Depends(get_db)):
-    """优先调用 AI 生成差异化题目，失败时回退到 MVP 本地题目。"""
+async def get_questions(
+    session_id: uuid.UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """按 team_goal 增量生成题目并返回生成进度。"""
     team_goal = _get_team_goal(session_id, db)
+    session_key = str(session_id)
+    min_count = 1
+    if request.query_params.get("min_count"):
+        try:
+            min_count = max(1, min(_AI_QUESTION_COUNT, int(request.query_params.get("min_count", "1"))))
+        except ValueError:
+            min_count = 1
+
     if team_goal == "雅思学习搭子":
-        ai_dims = _IELTS_AI_DIMS[:3]
-        comp_type = "雅思"
+        competition_type = "雅思"
+        ai_dims = _IELTS_AI_DIMS
+        base_dims = _IELTS_DIMS
         fallback_questions = _IELTS_MVP_QUESTIONS
-        dims = _IELTS_DIMS
     else:
-        ai_dims = _MATH_AI_DIMS[:3]
-        comp_type = "数学建模"
+        competition_type = "数学建模"
+        ai_dims = _MATH_AI_DIMS
+        base_dims = _MATH_DIMS
         fallback_questions = _MATH_MVP_QUESTIONS
-        dims = _MATH_DIMS
 
-    try:
-        raw_questions = await asyncio.wait_for(
-            ai_service.generate_batch_questions(
-                competition_type=comp_type,
-                dimensions=ai_dims,
-            ),
-            timeout=40.0,
+    cached_questions = _get_cached_questions(session_key)
+    task = _QUESTION_INFLIGHT.get(session_key)
+
+    if task is None and len(cached_questions) < _AI_QUESTION_COUNT:
+        task = _start_generation_task(session_key, competition_type, ai_dims, base_dims)
+    elif task is not None:
+        print(f"[AI] in-flight hit for session={session_key}")
+
+    if task is not None and len(cached_questions) < min_count:
+        deadline = time.time() + 8.0
+        while time.time() < deadline:
+            current = _get_cached_questions(session_key)
+            if len(current) >= min_count or session_key not in _QUESTION_INFLIGHT:
+                break
+            await asyncio.sleep(0.25)
+
+    questions = _get_cached_questions(session_key)
+    is_generating = session_key in _QUESTION_INFLIGHT
+
+    if questions:
+        return QuestionsResponse(
+            session_id=session_key,
+            questions=questions,
+            total_count=_AI_QUESTION_COUNT,
+            ready_count=len(questions),
+            is_generating=is_generating,
         )
-        questions = [
-            SessionQuestion(
-                id=q.get("id", f"q_{i+1}"),
-                dimension=q.get("dimension", dims[i % len(dims)]["key"]),
-                text=q.get("text", ""),
-                options=[
-                    SessionQuestionOption(
-                        option_id=opt.get("option_id", "A"),
-                        text=opt.get("text", ""),
-                    )
-                    for opt in q.get("options", [])
-                ],
-            )
-            for i, q in enumerate(raw_questions)
-        ]
-        if questions:
-            return QuestionsResponse(session_id=str(session_id), questions=questions)
-    except asyncio.TimeoutError:
-        print(f"[AI] generate_batch_questions timed out, using MVP fallback ({team_goal})")
-    except Exception as e:
-        print(f"[AI] generate_batch_questions failed, using MVP fallback: {e}")
 
-    return QuestionsResponse(session_id=str(session_id), questions=fallback_questions)
+    return QuestionsResponse(
+        session_id=str(session_id),
+        questions=fallback_questions,
+        total_count=len(fallback_questions),
+        ready_count=len(fallback_questions),
+        is_generating=False,
+    )
+
+
+@router.post(
+    "/{session_id}/pre-answer",
+    summary="保存前置问题答案（固定标签）",
+)
+def save_pre_answer(
+    session_id: uuid.UUID,
+    body: PreAnswerRequest,
+    db: Session = Depends(get_db),
+):
+    session = db.query(MatchSession).filter(MatchSession.id == session_id).first()
+    if not session:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="会话不存在",
+        )
+
+    user = db.query(User).filter(User.id == session.user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="用户不存在",
+        )
+
+    changed = _apply_fixed_preferences(user, body.question_id, body.option_id)
+    if changed:
+        db.commit()
+
+    return {"ok": True}
 
 
 @router.post(
@@ -336,14 +554,14 @@ def submit_answers(
         return _submit_ielts(session_id, body, db)
     return _submit_math(session_id, body, db)
 
-
 # ─── 数学建模大赛匹配逻辑 ───
 
 def _submit_math(session_id: uuid.UUID, body: SubmitRequest, db: Session) -> SubmitResponse:
-    # ── 1. 构建维度分数 ──
+    # ── 1. 构建当前用户维度分数 ──
     user_dim_scores: dict[str, float] = {d["key"]: 5.0 for d in _MATH_DIMS}
+    q_dim_map = _get_session_question_dim_map(str(session_id))
     for ans in body.answers:
-        dim = _MATH_Q_DIM_MAP.get(ans.question_id)
+        dim = q_dim_map.get(ans.question_id)
         if dim and ans.option_id in _MATH_OPTION_SCORES:
             user_dim_scores[dim] = _MATH_OPTION_SCORES[ans.option_id]
 
@@ -376,7 +594,26 @@ def _submit_math(session_id: uuid.UUID, body: SubmitRequest, db: Session) -> Sub
         query = db.query(User, UserProfile).join(UserProfile, User.id == UserProfile.user_id)
         if user_uuid:
             query = query.filter(User.id != user_uuid)
-        for user, profile in query.all():
+
+        current_user: User | None = None
+        if user_uuid:
+            current_user = db.query(User).filter(User.id == user_uuid).first()
+
+        has_pref_filter = False
+        filtered_query = query
+        if current_user and current_user.gender_preference in ("男", "女"):
+            filtered_query = filtered_query.filter(User.gender == current_user.gender_preference)
+            has_pref_filter = True
+        if current_user and current_user.grade_preference in ("大一", "大二", "大三", "大四"):
+            filtered_query = filtered_query.filter(User.grade == current_user.grade_preference)
+            has_pref_filter = True
+
+        candidate_rows = filtered_query.all()
+        if has_pref_filter and not candidate_rows:
+            print(f"[MATCH] no candidates after preference filter, fallback to unfiltered pool session={session_id}")
+            candidate_rows = query.all()
+
+        for user, profile in candidate_rows:
             uid = str(user.id)
             db_candidate_profiles.append(MatchProfile(
                 user_id=uid,
@@ -546,7 +783,26 @@ def _submit_ielts(session_id: uuid.UUID, body: SubmitRequest, db: Session) -> Su
         )
         if user_uuid:
             query = query.filter(User.id != user_uuid)
-        for user, profile in query.all():
+
+        current_user: User | None = None
+        if user_uuid:
+            current_user = db.query(User).filter(User.id == user_uuid).first()
+
+        has_pref_filter = False
+        filtered_query = query
+        if current_user and current_user.gender_preference in ("男", "女"):
+            filtered_query = filtered_query.filter(User.gender == current_user.gender_preference)
+            has_pref_filter = True
+        if current_user and current_user.grade_preference in ("大一", "大二", "大三", "大四"):
+            filtered_query = filtered_query.filter(User.grade == current_user.grade_preference)
+            has_pref_filter = True
+
+        candidate_rows = filtered_query.all()
+        if has_pref_filter and not candidate_rows:
+            print(f"[MATCH] no candidates after preference filter, fallback to unfiltered pool session={session_id}")
+            candidate_rows = query.all()
+
+        for user, profile in candidate_rows:
             uid = str(user.id)
             db_candidate_profiles.append(IELTSMatchProfile(
                 user_id=uid,

@@ -25,9 +25,17 @@ class SessionQuestion(BaseModel):
 class QuestionsResponse(BaseModel):
     session_id: str
     questions: list[SessionQuestion]
+    total_count: int = 0
+    ready_count: int = 0
+    is_generating: bool = False
 
 
 class AnswerItem(BaseModel):
+    question_id: str
+    option_id: str
+
+
+class PreAnswerRequest(BaseModel):
     question_id: str
     option_id: str
 
