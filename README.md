@@ -1,4 +1,5 @@
 # FindBud — Team Matching Web App
+> [中文版见下方 / Chinese version below](#中文版)
 
 > Built for University of Nottingham Ningbo China (UNNC) students. Uses AI-driven questionnaires to vectorize user profiles + utility-function maximization matching to help you quickly find the best teammates for competitions.
 
@@ -285,7 +286,7 @@ MIT License — see [LICENSE](./LICENSE)
 
 <details>
 <summary><strong>�� 中文版本</strong></summary>
-
+<a id="中文版"></a>
 # FindBud — 找搭子 · 比赛组队 Web
 
 > 面向宁波诺丁汉大学学生，通过 AI 选择题量化用户向量 + 效用函数最大化匹配，帮你快速找到最合适的比赛队友。
