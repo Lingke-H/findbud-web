@@ -283,10 +283,10 @@ Before coding, read the [`.cursorrules`](./.cursorrules) file carefully. It defi
 MIT License — see [LICENSE](./LICENSE)
 
 ---
-
+<a id="中文版"></a>
 <details>
 <summary><strong>�� 中文版本</strong></summary>
-<a id="中文版"></a>
+
 # FindBud — 找搭子 · 比赛组队 Web
 
 > 面向宁波诺丁汉大学学生，通过 AI 选择题量化用户向量 + 效用函数最大化匹配，帮你快速找到最合适的比赛队友。
