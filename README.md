@@ -1,3 +1,291 @@
+# FindBud — Team Matching Web App
+
+> Built for University of Nottingham Ningbo China (UNNC) students. Uses AI-driven questionnaires to vectorize user profiles + utility-function maximization matching to help you quickly find the best teammates for competitions.
+
+---
+
+## Project Overview
+
+**FindBud** is a campus teammate-matching platform for **UNNC** students (study partners, competition teams, travel buddies, etc.). The current MVP focuses on **finding teammates for mathematical modeling competitions**, while keeping the codebase maximally reusable.
+
+**Core Pain Point**: Cross-major teammate discovery on campus suffers from information asymmetry. Traditional team-forming methods cannot verify skill compatibility or authenticity, often leading to overlapping skills or misaligned goals.
+
+### Key Features
+
+- **Vectorized User Profiles**: AI-generated multiple-choice questions quantify three dimensions (skill vector, personality-drive factors, absolute capability)
+- **Utility Function Maximization Matching**: A "parallel & orthogonal utility function" computes optimal team combinations from the mock database
+- **Fixed Top-3 Recommendations**: Outputs exactly 3 best candidate matches
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Frontend | React + Vite (Web) |
+| Backend | Python + FastAPI |
+| Database | PostgreSQL |
+| AI Interface | AI API (configured via env vars; supports OpenAI / DeepSeek, etc.) |
+| ORM | SQLAlchemy |
+| Validation | Pydantic v2 |
+
+---
+
+## Business Flow
+
+```
+Phase I: User Information Collection
+     │
+     ▼
+┌──────────────────────────────────────┐
+│  Step 1: Basic Info (6 fields)       │
+│  Name / Gender / Year / Major        │
+│  Team Goal (what kind of partner)    │
+│  Long-term teaming preference        │
+└──────────────┬───────────────────────┘
+               │
+               ▼
+┌──────────────────────────────────────┐
+│  Step 2: Adaptive Pre-Questions      │
+│  (1–2 questions)                     │
+│  Branch by team goal; collect        │
+│  subjective factors affecting core   │
+│  vectors.                            │
+│  Example (Math Modeling):            │
+│  "What role do you prefer?"          │
+│  A. Modeler  B. Writer  C. Coder    │
+│  D. No preference                    │
+└──────────────┬───────────────────────┘
+               │
+               ▼
+┌──────────────────────────────────────────────────┐
+│  Step 3: AI Core Vector Collection (MCQs)        │
+│  AI-generated MCQs quantify three dimensions:    │
+│                                                  │
+│  Skill Vector (relative strengths):              │
+│    Math Modeling / Programming / Paper Writing    │
+│                                                  │
+│  Personality-Drive Factors:                      │
+│    Leader / Supporter / Executor                 │
+│                                                  │
+│  Absolute Capability:                            │
+│    Competition experience / Awards / Ambition    │
+└──────────────┬───────────────────────────────────┘
+               │
+               ▼
+Phase II: Matching Algorithm
+               │
+               ▼
+┌──────────────────────────────────────┐
+│  Step 4: Utility Function Matching   │
+│  Compute optimal team combinations   │
+│  from the mock DB using "parallel &  │
+│  orthogonal utility functions"       │
+└──────────────┬───────────────────────┘
+               │
+               ▼
+Phase III: Output Results
+               │
+               ▼
+┌──────────────────────────────────────┐
+│  Step 5: Display Top 3 Candidates    │
+│  Show match dimensions + contact info│
+└──────────────────────────────────────┘
+```
+
+---
+
+## Project Structure
+
+```
+FindBud_APP/
+├── frontend/                        # React + Vite web frontend
+│   ├── src/
+│   │   ├── pages/                   # Page components
+│   │   │   ├── OnboardingPage.tsx       # Basic info form (6 fields)
+│   │   │   ├── PreQuestionPage.tsx      # Adaptive pre-question page
+│   │   │   ├── AIQuestionPage.tsx       # AI MCQ vector collection page
+│   │   │   └── MatchResultPage.tsx      # Recommendation results page
+│   │   ├── api/                     # Backend API wrappers
+│   │   └── App.tsx                  # Route configuration
+│   ├── package.json
+│   └── .env.example
+│
+├── backend/                         # FastAPI backend
+│   ├── app/
+│   │   ├── routers/
+│   │   │   ├── user_router.py           # User info endpoints
+│   │   │   ├── ai_question_router.py    # AI question endpoints
+│   │   │   └── match_router.py          # Matching / recommendation endpoints
+│   │   ├── models/                  # Database ORM models
+│   │   ├── schemas/                 # Pydantic schemas
+│   │   ├── services/
+│   │   │   ├── ai_service.py            # AI dynamic questioning logic
+│   │   │   └── match_service.py         # Matching algorithm logic
+│   │   ├── core/
+│   │   │   ├── config.py                # Env var loading
+│   │   │   └── database.py              # Database connection
+│   │   └── main.py
+│   ├── tests/
+│   ├── .env.example                 # Env var template (safe to commit)
+│   ├── .env                         # Real env vars (in .gitignore)
+│   └── requirements.txt
+│
+├── .cursorrules                     # AI coding guidelines
+├── .gitignore
+└── README.md
+```
+
+---
+
+## Local Setup
+
+### Prerequisites (by role)
+
+> All members use **Windows**; commands are for PowerShell.
+
+| Member | Required Software |
+|--------|------------------|
+| **xyh** (Backend + DB) | Python ≥ 3.11, PostgreSQL ≥ 15 |
+| **xzf** (Frontend) | Node.js ≥ 18 |
+| **hlk** (Frontend waiting page + Backend matching) | Python ≥ 3.11, Node.js ≥ 18 |
+
+**Downloads:**
+- **Python**: https://www.python.org/downloads/ (check ☑ Add Python to PATH during install)
+- **PostgreSQL**: https://www.postgresql.org/download/windows/ (remember the postgres password you set)
+- **Node.js**: https://nodejs.org (choose LTS, next-next-finish)
+
+> ⚠️ After installing any software, you must **close and reopen PowerShell** for the commands to take effect.
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/<your-org>/FindBud_APP.git
+cd FindBud_APP
+```
+
+### 2. Backend Setup
+
+**Windows (PowerShell):**
+```powershell
+# Create and activate virtual environment
+python -m venv backend\venv
+backend\venv\Scripts\activate
+
+# Install dependencies
+pip install -r backend\requirements.txt
+
+# Set up environment variables (important!)
+Copy-Item backend\.env.example backend\.env
+```
+
+**macOS / Linux:**
+```bash
+python -m venv backend/venv
+source backend/venv/bin/activate
+pip install -r backend/requirements.txt
+cp backend/.env.example backend/.env
+```
+
+> ⚠️ **Note**: All commands are run from the project root `FindBud_APP/`; no need to `cd backend` first.
+
+Open `backend/.env` and fill in your actual configuration:
+
+```dotenv
+# ==============================
+# FindBud Backend Environment Variables
+# ⚠️  This file is in .gitignore — NEVER commit it to Git
+# ==============================
+
+# Database connection
+DATABASE_URL=postgresql://username:password@localhost:5432/findbud_db
+
+# AI API config (get key from your AI platform console; NEVER hardcode in source)
+AI_API_KEY=your_ai_api_key_here
+AI_API_BASE_URL=https://api.openai.com/v1   # or DeepSeek / other provider URL
+AI_MODEL_NAME=gpt-4o                         # model name to use
+
+# Application security
+SECRET_KEY=your_random_secret_key_here       # for JWT signing; use a random string
+DEBUG=True                                   # set to False in production
+```
+
+> **Security Notes**:
+> - `.env` is listed in `.gitignore` — **never** commit it to Git.
+> - Only `.env.example` (with placeholder values) is kept in the repo for reference.
+> - If your `AI_API_KEY` is leaked, revoke it immediately from the platform console and regenerate.
+
+### 3. Initialize the Database
+
+```bash
+# Create the database in PostgreSQL
+createdb findbud_db
+
+# Run database migrations
+cd backend
+alembic upgrade head
+```
+
+### 4. Start the Backend
+
+```bash
+cd backend
+uvicorn app.main:app --reload --port 8000
+```
+
+API docs: [http://localhost:8000/docs](http://localhost:8000/docs)
+
+### 5. Frontend Setup
+
+**Windows (PowerShell):**
+```powershell
+npm install --prefix frontend
+Copy-Item frontend\.env.example frontend\.env
+```
+
+**macOS / Linux:**
+```bash
+npm install --prefix frontend
+cp frontend/.env.example frontend/.env
+```
+
+`.env` example:
+
+```dotenv
+VITE_API_BASE_URL=http://localhost:8000
+```
+
+### 6. Start the Frontend
+
+```powershell
+npm run dev --prefix frontend
+```
+
+Visit [http://localhost:5173](http://localhost:5173) to see the app.
+
+---
+
+## Development Guidelines
+
+Before coding, read the [`.cursorrules`](./.cursorrules) file carefully. It defines:
+
+- Naming conventions (Python `snake_case` / TS `camelCase`)
+- Mandatory Chinese comment requirements
+- AI dynamic questioning module coding constraints
+- API Key security rules
+- Git commit message format
+
+---
+
+## License
+
+MIT License — see [LICENSE](./LICENSE)
+
+---
+
+<details>
+<summary><strong>�� 中文版本</strong></summary>
+
 # FindBud — 找搭子 · 比赛组队 Web
 
 > 面向宁波诺丁汉大学学生，通过 AI 选择题量化用户向量 + 效用函数最大化匹配，帮你快速找到最合适的比赛队友。
@@ -277,3 +565,5 @@ npm run dev --prefix frontend
 ## License
 
 MIT License — 详见 [LICENSE](./LICENSE)
+
+</details>
