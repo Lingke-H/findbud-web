@@ -285,7 +285,7 @@ MIT License — see [LICENSE](./LICENSE)
 ---
 <a id="中文版"></a>
 <details>
-<summary><strong>�� 中文版本</strong></summary>
+<summary><strong> 中文版本</strong></summary>
 
 # FindBud — 找搭子 · 比赛组队 Web
 
